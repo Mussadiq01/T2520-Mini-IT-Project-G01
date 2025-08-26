@@ -16,11 +16,6 @@ screen_info = pygame.display.Info()
 win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
 pygame.display.set_caption("Walking Character")
 
-# --- Motion blur surface ---
-fade_surface = pygame.Surface((screen_info.current_w, screen_info.current_h))
-fade_surface.set_alpha(80)  # 0 = fully transparent, 255 = opaque
-fade_surface.fill((0, 0, 0))
-
 # --- Settings ---
 char_size = 64
 vel = 4
@@ -82,6 +77,7 @@ frame_delay = 120  # ms between frames
 stamina = stamina_max
 is_dashing = False
 dash_timer = 0
+dash_dir = (0, 0)
 
 # --- Main Loop ---
 run = True
@@ -93,20 +89,24 @@ while run:
         if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
             run = False
 
+        # Track key presses/releases even while dashing so state stays fresh,
+        # but do NOT change facing while dashing.
         if event.type == pygame.KEYDOWN and event.key in key_to_dir:
             d = key_to_dir[event.key]
             if d not in pressed_dirs:
                 pressed_dirs.append(d)
-            last_direction = pressed_dirs[-1]
+            if not is_dashing:
+                last_direction = pressed_dirs[-1]
 
         if event.type == pygame.KEYUP and event.key in key_to_dir:
             d = key_to_dir[event.key]
             if d in pressed_dirs:
                 pressed_dirs.remove(d)
-            if pressed_dirs:
-                last_direction = pressed_dirs[-1]
-            else:
-                frame_index = 0
+            if not is_dashing:
+                if pressed_dirs:
+                    last_direction = pressed_dirs[-1]
+                else:
+                    frame_index = 0
 
         # --- Dash ---
         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
@@ -115,26 +115,41 @@ while run:
                 dash_timer = dash_duration
                 stamina -= 1.0  # use one bar instantly
 
+                # set dash direction based on current pressed_dirs
+                dx_tmp, dy_tmp = 0, 0
+                if "left" in pressed_dirs: dx_tmp -= 1
+                if "right" in pressed_dirs: dx_tmp += 1
+                if "up" in pressed_dirs: dy_tmp -= 1
+                if "down" in pressed_dirs: dy_tmp += 1
+                if dx_tmp != 0 and dy_tmp != 0:
+                    norm = math.sqrt(dx_tmp*dx_tmp + dy_tmp*dy_tmp)
+                    dx_tmp /= norm
+                    dy_tmp /= norm
+                dash_dir = (dx_tmp, dy_tmp)
+
     # --- Movement ---
-    keys = pygame.key.get_pressed()
     dx, dy = 0, 0
 
-    if "left" in pressed_dirs and keys[pygame.K_a]:
-        dx -= 1
-    if "right" in pressed_dirs and keys[pygame.K_d]:
-        dx += 1
-    if "up" in pressed_dirs and keys[pygame.K_w]:
-        dy -= 1
-    if "down" in pressed_dirs and keys[pygame.K_s]:
-        dy += 1
+    if is_dashing:
+        dx, dy = dash_dir
+    else:
+        keys = pygame.key.get_pressed()
+        if "left" in pressed_dirs and keys[pygame.K_a]:
+            dx -= 1
+        if "right" in pressed_dirs and keys[pygame.K_d]:
+            dx += 1
+        if "up" in pressed_dirs and keys[pygame.K_w]:
+            dy -= 1
+        if "down" in pressed_dirs and keys[pygame.K_s]:
+            dy += 1
+
+        # normalize diagonal movement
+        if dx != 0 and dy != 0:
+            norm = math.sqrt(dx*dx + dy*dy)
+            dx /= norm
+            dy /= norm
 
     moving = dx != 0 or dy != 0
-
-    # normalize diagonal movement
-    if dx != 0 and dy != 0:
-        norm = math.sqrt(dx*dx + dy*dy)
-        dx /= norm
-        dy /= norm
 
     # dash vs walk
     speed = vel
@@ -143,6 +158,9 @@ while run:
         dash_timer -= dt
         if dash_timer <= 0:
             is_dashing = False
+            # after dash ends, align facing to current input if available
+            if pressed_dirs:
+                last_direction = pressed_dirs[-1]
 
     x += dx * speed
     y += dy * speed
@@ -169,11 +187,7 @@ while run:
         frame_index = 0
 
     # --- Draw ---
-    if is_dashing:
-        # apply motion blur
-        win.blit(fade_surface, (0, 0))
-    else:
-        win.fill((0, 0, 0))  # normal clear when walking
+    win.fill((0, 0, 0))  # always clear normally
     pygame.draw.rect(win, (0, 0, 0), box_rect)
     pygame.draw.rect(win, (128, 128, 128), box_rect, 4)
 
@@ -194,7 +208,7 @@ while run:
         # background (empty bar)
         pygame.draw.rect(win, (128, 128, 128), (x_pos, y_pos, BAR_W, BAR_H))
 
-        # filled portion
+        # filled portion 
         fill = min(1.0, max(0.0, stamina - i))
         if fill > 0:
             fill_w = int(BAR_W * fill)
