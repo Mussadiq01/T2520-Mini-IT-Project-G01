@@ -228,8 +228,8 @@ def load_char_sprite(name, size):
 
 char_size = 48
 vel = 4
-dash_speed = 12
-dash_duration = 150
+dash_speed = 14
+dash_duration = 175
 stamina_max = 3.0
 stamina_regen_rate = 0.5
 
