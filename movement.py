@@ -17,7 +17,7 @@ win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), py
 pygame.display.set_caption("Walking Character")
 
 # --- Settings ---
-char_size = 64
+char_size = 48
 vel = 4
 dash_speed = 15       # how fast dashing is
 dash_duration = 200   # dash lasts 200 ms
@@ -59,7 +59,7 @@ key_to_dir = {
 }
 
 # --- Walkable Box ---
-box_size = 512
+box_size = 528
 box_x = (screen_info.current_w - box_size) // 2
 box_y = (screen_info.current_h - box_size) // 2
 box_rect = pygame.Rect(box_x, box_y, box_size, box_size)
