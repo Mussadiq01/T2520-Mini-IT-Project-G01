@@ -16,7 +16,7 @@ def get_font(size):
     """Font size based on 1080p scaling"""
     base_height = 1080
     scale = SCREEN_H / base_height
-    return pygame.font.Font("assets/font.ttf", int(size * scale))
+    return pygame.font.Font("sprites/font.ttf", int(size * scale))
 
 def load_and_scale(path, width_ratio=5):
     """Load image and scale to fraction of screen width"""
@@ -27,12 +27,12 @@ def load_and_scale(path, width_ratio=5):
     return pygame.transform.scale(img, (new_width, new_height))
 
 # ---------------------
-# Load assets
+# Load sprites
 # ---------------------
-BG = pygame.transform.scale(pygame.image.load("assets/Background.png"), (SCREEN_W, SCREEN_H))
-PLAY_IMG = load_and_scale("assets/Play Rect.png", 4)      # ~25% screen width
-OPTIONS_IMG = load_and_scale("assets/Options Rect.png", 4)
-QUIT_IMG = load_and_scale("assets/Quit Rect.png", 4)
+BG = pygame.transform.scale(pygame.image.load("sprites/Background.png"), (SCREEN_W, SCREEN_H))
+PLAY_IMG = load_and_scale("sprites/Play Rect.png", 4)      # ~25% screen width
+OPTIONS_IMG = load_and_scale("sprites/Options Rect.png", 4)
+QUIT_IMG = load_and_scale("sprites/Quit Rect.png", 4)
 
 # ---------------------
 # Game state
