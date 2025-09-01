@@ -3,6 +3,11 @@ import sys
 import math
 import os
 import random
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
+def asset_path(*parts):
+    return str(BASE_DIR.joinpath(*parts))
 
 # ======================
 # GAME LOOP
@@ -27,36 +32,52 @@ def run_game():
     TRAP_TILE = "T"
 
     def load_map_from_file(filename):
-        path = os.path.join("maps", filename)
-        with open(path, "r") as f:
-            lines = [list(line.strip()) for line in f.readlines()]
+        """Load a map file from project maps/ folder. If missing, return a default floor map.
+           Ensures result is exactly HEIGHT x WIDTH by padding/truncating."""
+        full_path = asset_path("maps", filename)
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                raw_lines = [list(line.rstrip("\n")) for line in f.readlines()]
+        else:
+            print(f"Warning: map file not found: {full_path}. Using empty floor map.")
+            raw_lines = [['.' for _ in range(WIDTH)] for _ in range(HEIGHT)]
+
+        # Normalize to HEIGHT x WIDTH
+        lines = []
+        for r in range(HEIGHT):
+            if r < len(raw_lines):
+                row = raw_lines[r]
+                if len(row) < WIDTH:
+                    row = row + ['.'] * (WIDTH - len(row))
+                elif len(row) > WIDTH:
+                    row = row[:WIDTH]
+            else:
+                row = ['.'] * WIDTH
+            lines.append(row)
         return lines
 
-    MAPS = [
-        load_map_from_file("map1.txt"),
-        load_map_from_file("map2.txt"),
-        load_map_from_file("map3.txt"),
-        load_map_from_file("map4.txt"),
-        load_map_from_file("map5.txt"),
-        load_map_from_file("map6.txt"),
-        load_map_from_file("map7.txt"),
-        load_map_from_file("map8.txt"),
-        load_map_from_file("map9.txt"),
-        load_map_from_file("map10.txt"),
-        load_map_from_file("map11.txt"),
-        load_map_from_file("map12.txt"),
-        load_map_from_file("map13.txt"),
-        load_map_from_file("map14.txt"),
-        load_map_from_file("map15.txt"),
-    ]
+    # --- Add MAPS definition so pick_map() can use it ---
+    MAPS = [load_map_from_file(f"map{i}.txt") for i in range(1, 16)]
 
     def load_sprite(filename, size=TILE_SIZE, rotation=0):
-        path = os.path.join("sprites", filename)
-        img = pygame.image.load(path).convert_alpha()
-        img = pygame.transform.scale(img, (size, size))
-        if rotation != 0:
-            img = pygame.transform.rotate(img, rotation)
-        return img
+        """Load sprite from project sprites/ folder. Return visible placeholder on failure."""
+        full_path = asset_path("sprites", filename)
+        try:
+            img = pygame.image.load(full_path).convert_alpha()
+            img = pygame.transform.scale(img, (size, size))
+            if rotation != 0:
+                img = pygame.transform.rotate(img, rotation)
+            return img
+        except Exception:
+            # visible placeholder (keeps program running when sprites missing)
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            surf.fill((140, 140, 140, 255))
+            line_w = max(1, size // 12)
+            pygame.draw.line(surf, (200, 30, 30), (0, 0), (size, size), line_w)
+            pygame.draw.line(surf, (200, 30, 30), (0, size), (size, 0), line_w)
+            if rotation != 0:
+                surf = pygame.transform.rotate(surf, rotation)
+            return surf
 
     # NOTE: Ensure the sprites directory contains the required PNGs used below.
     SPRITES = {
@@ -181,11 +202,16 @@ def run_game():
     # CHARACTER SETUP
     # ======================
     def load_char_sprite(name, size):
-        path = os.path.join("sprites", name)
-        return pygame.transform.scale(
-            pygame.image.load(path).convert_alpha(),
-            (size, size)
-        )
+        """Load character sprite from project sprites/ folder or return placeholder."""
+        full_path = asset_path("sprites", name)
+        try:
+            img = pygame.image.load(full_path).convert_alpha()
+            return pygame.transform.scale(img, (size, size))
+        except Exception:
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            surf.fill((90, 120, 200, 255))
+            pygame.draw.rect(surf, (0, 0, 0), surf.get_rect(), max(1, size//16))
+            return surf
 
     char_size = 48
     vel = 4

@@ -1,5 +1,11 @@
 import pygame, sys
 import main  # dungeon game file (must have run_game())
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
+
+def asset_path(*parts):
+    return str(BASE_DIR.joinpath(*parts))
 
 pygame.init()
 
@@ -49,11 +55,28 @@ def get_font(size):
     """Font size based on 1080p scaling"""
     base_height = 1080
     scale = SCREEN_H / base_height
-    return pygame.font.Font("sprites/font.ttf", int(size * scale))
+    font_path = asset_path("sprites", "font.ttf")
+    try:
+        # load project font (absolute path)
+        return pygame.font.Font(font_path, int(size * scale))
+    except Exception:
+        # fallback to system font if file missing or invalid
+        return pygame.font.SysFont(None, int(size * scale))
 
 def load_and_scale(path, width_ratio=5):
-    """Load image and scale to fraction of screen width"""
-    img = pygame.image.load(path).convert_alpha()
+    """Load image and scale to fraction of screen width; path is project-relative (e.g. 'sprites/Img.png')"""
+    full_path = asset_path(*path.split("/"))
+    try:
+        img = pygame.image.load(full_path).convert_alpha()
+    except Exception:
+        # create a visible placeholder if file missing
+        new_width = SCREEN_W // width_ratio
+        new_height = new_width
+        img = pygame.Surface((new_width, new_height), pygame.SRCALPHA)
+        img.fill((200, 200, 200, 255))
+        pygame.draw.line(img, (150, 0, 0), (0, 0), (new_width, new_height), 5)
+        pygame.draw.line(img, (150, 0, 0), (0, new_height), (new_width, 0), 5)
+        return img
     new_width = SCREEN_W // width_ratio
     scale = new_width / img.get_width()
     new_height = int(img.get_height() * scale)
@@ -62,7 +85,13 @@ def load_and_scale(path, width_ratio=5):
 # ---------------------
 # Load sprites
 # ---------------------
-BG = pygame.transform.scale(pygame.image.load("sprites/Background.png"), (SCREEN_W, SCREEN_H))
+BG_path = asset_path("sprites", "Background.png")
+try:
+    BG = pygame.transform.scale(pygame.image.load(BG_path).convert(), (SCREEN_W, SCREEN_H))
+except Exception:
+    BG = pygame.Surface((SCREEN_W, SCREEN_H))
+    BG.fill((30, 30, 30))  # neutral background when image missing
+
 PLAY_IMG = load_and_scale("sprites/Play Rect.png", 4)      # ~25% screen width
 OPTIONS_IMG = load_and_scale("sprites/Options Rect.png", 4)
 QUIT_IMG = load_and_scale("sprites/Quit Rect.png", 4)
