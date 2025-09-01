@@ -24,6 +24,7 @@ def run_game():
 
     WALL_TILES = {"-", "|", "A", "B", "C", "D", "#", "0", "I"}
     LAVA_TILE = "X"
+    TRAP_TILE = "T"
 
     def load_map_from_file(filename):
         path = os.path.join("maps", filename)
@@ -40,6 +41,13 @@ def run_game():
         load_map_from_file("map6.txt"),
         load_map_from_file("map7.txt"),
         load_map_from_file("map8.txt"),
+        load_map_from_file("map9.txt"),
+        load_map_from_file("map10.txt"),
+        load_map_from_file("map11.txt"),
+        load_map_from_file("map12.txt"),
+        load_map_from_file("map13.txt"),
+        load_map_from_file("map14.txt"),
+        load_map_from_file("map15.txt"),
     ]
 
     def load_sprite(filename, size=TILE_SIZE, rotation=0):
@@ -61,7 +69,8 @@ def run_game():
         "C": pygame.transform.flip(load_sprite("wall_corner_2.png"), True, False),
         "D": load_sprite("wall_corner_2.png"),
         "0": load_sprite("wall_middle_1.png"),
-        "#": load_sprite("wall_middle_2.png")
+        "#": load_sprite("wall_middle_2.png"),
+        "T": load_sprite("trap_off.png")
     }
     
     # Sword sprite
@@ -73,6 +82,13 @@ def run_game():
     cooldown_timer = 0
     swing_start_angle = 0
     swing_arc = 120  # degrees of swing
+
+    # Trap sprites
+    trap_off_img = load_sprite("trap_off.png")
+    trap_on_img = load_sprite("trap_on.png")
+    trap_toggle_interval = 1500  # ms (1.5s toggle)
+    trap_timer = 0
+    trap_active = False
 
     FLOOR_SPRITES = [
         load_sprite("floor_1.png"),
@@ -92,12 +108,14 @@ def run_game():
                     floor_choices[y][x] = random.choice(FLOOR_SPRITES)
         return game_map, floor_choices
 
-    def draw_map(win, game_map, floor_choices, offset_x, offset_y):
+    def draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active):
         for y in range(HEIGHT):
             for x in range(WIDTH):
                 tile = game_map[y][x]
                 if tile == ".":
                     sprite = floor_choices[y][x]
+                elif tile == "T":
+                    sprite = trap_on_img if trap_active else trap_off_img
                 else:
                     sprite = SPRITES[tile]
                 win.blit(sprite, (offset_x + x*TILE_SIZE, offset_y + y*TILE_SIZE))
@@ -172,7 +190,7 @@ def run_game():
     char_size = 48
     vel = 4
     dash_speed = 16
-    dash_duration = 175
+    dash_duration = 200
     stamina_max = 3.0
     stamina_regen_rate = 0.5
 
@@ -230,9 +248,24 @@ def run_game():
     # simple initial player_center based on x,y
     player_center = (x + char_size // 2, y + char_size // 2)
 
+    # Heart system
+    hearts = 3
+    # 48px hearts, full and empty variants (ensure heart_1.png and heart_0.png exist)
+    heart_full = load_sprite("heart_1.png", size=48)
+    heart_empty = load_sprite("heart_0.png", size=48)
+    heart_spacing = 0
+     # track whether player was on an active trap in the previous frame
+    on_trap_prev = False
+
     run = True
     while run:
         dt = clock.tick(60)
+
+        # Update trap timer
+        trap_timer += dt
+        if trap_timer >= trap_toggle_interval:
+            trap_timer = 0
+            trap_active = not trap_active
 
         # Timers should be updated each frame, not just when events occur
         if attacking:
@@ -343,7 +376,6 @@ def run_game():
                     tile_y = int((py - offset_y) // TILE_SIZE)
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
-                            print("You died in lava!")
                             return  # back to menu
                 is_dashing = False
                 if pressed_dirs:
@@ -361,6 +393,7 @@ def run_game():
                 y += dy * speed
 
         if is_dashing and dash_timer <= 0:
+            # check for lava under feet after dash ends
             foot_width = char_size // 2
             foot_height = 10
             foot_x = x + (char_size - foot_width) // 2
@@ -375,8 +408,39 @@ def run_game():
                 tile_y = int((py - offset_y) // TILE_SIZE)
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
-                        print("You died in lava!")
                         return  # back to menu
+            is_dashing = False
+            if pressed_dirs:
+                last_direction = pressed_dirs[-1]
+
+        # Always check traps (not just after dash)
+        foot_width = char_size // 2
+        foot_height = 10
+        foot_x = x + (char_size - foot_width) // 2
+        foot_y = y + char_size - foot_height
+        foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
+
+        # determine if any foot point is on an active trap this frame
+        on_trap_now = False
+        for px, py in [
+            (foot_rect.left, foot_rect.bottom - 1),
+            (foot_rect.right - 1, foot_rect.bottom - 1),
+            (foot_rect.centerx, foot_rect.bottom - 1)
+        ]:
+            tile_x = int((px - offset_x) // TILE_SIZE)
+            tile_y = int((py - offset_y) // TILE_SIZE)
+            if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
+                if game_map[tile_y][tile_x] == TRAP_TILE and trap_active:
+                    on_trap_now = True
+                    break
+
+        # only apply damage when transitioning from NOT on an active trap to ON an active trap
+        if on_trap_now and not on_trap_prev:
+            hearts -= 1
+            if hearts <= 0:
+                return  # back to menu
+
+        on_trap_prev = on_trap_now
 
         if stamina < stamina_max:
             stamina += stamina_regen_rate * (dt / 1000.0)
@@ -396,7 +460,7 @@ def run_game():
         # rotated_sword = sword_rotations[angle]  # not used directly here
 
         win.fill((0, 0, 0))
-        draw_map(win, game_map, floor_choices, offset_x, offset_y)
+        draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
 
         # Draw shadow first (under character)
         draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
@@ -450,6 +514,20 @@ def run_game():
             rotated_sword = pygame.transform.rotate(sword_img, -current_angle)
             rect = rotated_sword.get_rect(center=(sword_center_x, sword_center_y))
             win.blit(rotated_sword, rect.topleft)
+
+        # Draw 3 hearts to the right of the map (aligned to map's right edge).
+        total_hearts = 3
+        heart_w = heart_full.get_width()
+        heart_h = heart_full.get_height()
+        margin = 0
+        # place hearts flush to right side of the map area
+        start_x = offset_x + WIDTH * TILE_SIZE - (total_hearts * heart_w) - margin
+        # align hearts vertically with the stamina bar (centered on the bar)
+        heart_y = bar_y + (bar_h - heart_h) // 2
+        for i in range(total_hearts):
+            hx = start_x + i * (heart_w + heart_spacing)
+            img = heart_full if i < hearts else heart_empty
+            win.blit(img, (hx, heart_y))
 
         pygame.display.update()
 
