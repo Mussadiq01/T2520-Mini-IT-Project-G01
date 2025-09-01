@@ -5,47 +5,6 @@ import os
 import random
 
 # ======================
-# MAIN MENU
-# ======================
-def main_menu():
-    pygame.init()
-    screen_info = pygame.display.Info()
-    win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
-    pygame.display.set_caption("Main Menu")
-    clock = pygame.time.Clock()
-
-    font = pygame.font.SysFont(None, 72)
-    title = font.render("My Game", True, (255, 255, 255))
-    start = font.render("Press ENTER to Start", True, (200, 200, 200))
-    quit_txt = font.render("Press ESC to Quit", True, (200, 200, 200))
-
-    while True:
-        # recalc every frame in case resolution changed
-        screen_w, screen_h = win.get_size()
-
-        win.fill((0, 0, 0))
-        win.blit(title, (screen_w//2 - title.get_width()//2, screen_h//3))
-        win.blit(start, (screen_w//2 - start.get_width()//2, screen_h//2))
-        win.blit(quit_txt, (screen_w//2 - quit_txt.get_width()//2, screen_h//2 + 100))
-
-        pygame.display.flip()
-        clock.tick(60)
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_RETURN:  # Start game
-                    run_game()
-                    # re-create menu screen after game ends
-                    win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
-                elif event.key == pygame.K_ESCAPE:  # Quit
-                    pygame.quit()
-                    sys.exit()
-
-# ======================
 # GAME LOOP
 # ======================
 def run_game():
@@ -66,128 +25,21 @@ def run_game():
     WALL_TILES = {"-", "|", "A", "B", "C", "D", "#", "0", "I"}
     LAVA_TILE = "X"
 
-    MAPS = [
-        [   # Map 1
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 2
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","0","0",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","0","0",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 3
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".","X","X",".",".",".",".",".","X","X",".","|"],
-            ["I",".","X",".",".",".",".",".",".",".","X",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".","#","#","#",".",".",".",".","|"],
-            ["I",".",".",".",".","#","#","#",".",".",".",".","|"],
-            ["I",".",".",".",".","0","0","0",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".","X",".",".",".",".",".",".",".","X",".","|"],
-            ["I",".","X","X",".",".",".",".",".","X","X",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 4
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 5
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["I",".",".","0","0",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 6
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
+    def load_map_from_file(filename):
+        path = os.path.join("maps", filename)
+        with open(path, "r") as f:
+            lines = [list(line.strip()) for line in f.readlines()]
+        return lines
 
-        ],
-        [   # Map 7
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","X","X",".",".",".","#","#",".",".","|"],
-            ["I",".",".","X","X",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","#","#",".",".",".","X","X",".",".","|"],
-            ["I",".",".","0","0",".",".",".","X","X",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 8
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","0","0",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","0","0",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".","0","0",".",".",".","0","0",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["I",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ]
+    MAPS = [
+        load_map_from_file("map1.txt"),
+        load_map_from_file("map2.txt"),
+        load_map_from_file("map3.txt"),
+        load_map_from_file("map4.txt"),
+        load_map_from_file("map5.txt"),
+        load_map_from_file("map6.txt"),
+        load_map_from_file("map7.txt"),
+        load_map_from_file("map8.txt"),
     ]
 
     def load_sprite(filename, size=TILE_SIZE, rotation=0):
@@ -198,6 +50,7 @@ def run_game():
             img = pygame.transform.rotate(img, rotation)
         return img
 
+    # NOTE: Ensure the sprites directory contains the required PNGs used below.
     SPRITES = {
         "-": load_sprite("wall_edge.png"),
         "|": load_sprite("wall_side.png"),
@@ -211,6 +64,16 @@ def run_game():
         "#": load_sprite("wall_middle_2.png")
     }
     
+    # Sword sprite
+    sword_img = load_sprite("sword.png", size=48)
+    attack_duration = 250  # ms swing
+    attack_cooldown = 600  # ms cooldown after swing
+    attacking = False
+    attack_timer = 0
+    cooldown_timer = 0
+    swing_start_angle = 0
+    swing_arc = 120  # degrees of swing
+
     FLOOR_SPRITES = [
         load_sprite("floor_1.png"),
         load_sprite("floor_2.png"),
@@ -287,6 +150,14 @@ def run_game():
                 return False
 
         return True
+    
+    def precompute_rotations(image, step=3):
+        rotations = {}
+        for angle in range(0, 360, step):
+            rotations[angle] = pygame.transform.rotate(image, -angle)
+        return rotations
+
+    sword_rotations = precompute_rotations(sword_img, step=3)
 
     # ======================
     # CHARACTER SETUP
@@ -300,7 +171,7 @@ def run_game():
 
     char_size = 48
     vel = 4
-    dash_speed = 14
+    dash_speed = 16
     dash_duration = 175
     stamina_max = 3.0
     stamina_regen_rate = 0.5
@@ -354,9 +225,26 @@ def run_game():
     dash_timer = 0
     dash_dir = (0, 0)
 
+    # initialize values that were referenced before assignment
+    current_angle = 0.0
+    # simple initial player_center based on x,y
+    player_center = (x + char_size // 2, y + char_size // 2)
+
     run = True
     while run:
         dt = clock.tick(60)
+
+        # Timers should be updated each frame, not just when events occur
+        if attacking:
+            attack_timer -= dt
+            if attack_timer <= 0:
+                attacking = False
+                attack_timer = 0
+
+        if cooldown_timer > 0:
+            cooldown_timer -= dt
+            if cooldown_timer < 0:
+                cooldown_timer = 0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
@@ -403,6 +291,18 @@ def run_game():
                         dy_tmp /= norm
                     dash_dir = (dx_tmp, dy_tmp)
 
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # left click
+                if not attacking and cooldown_timer <= 0:
+                    attacking = True
+                    attack_timer = attack_duration
+                    cooldown_timer = attack_duration + attack_cooldown
+                    # Lock swing start angle toward mouse; compute player center now
+                    mx, my = pygame.mouse.get_pos()
+                    px = x + char_size // 2
+                    py = y + char_size // 2
+                    player_center = (px, py)
+                    swing_start_angle = math.degrees(math.atan2(my - py, mx - px))
+
         dx, dy = 0, 0
         if is_dashing:
             dx, dy = dash_dir
@@ -428,6 +328,7 @@ def run_game():
             speed = dash_speed
             dash_timer -= dt
             if dash_timer <= 0:
+                # check for lava under feet after dash ends
                 foot_width = char_size // 2
                 foot_height = 10
                 foot_x = x + (char_size - foot_width) // 2
@@ -490,6 +391,10 @@ def run_game():
         else:
             frame_index = 0
 
+        # Use current_angle only after initialization (we initialized it above)
+        angle = int(current_angle) // 3 * 3  # snap to nearest 3°
+        # rotated_sword = sword_rotations[angle]  # not used directly here
+
         win.fill((0, 0, 0))
         draw_map(win, game_map, floor_choices, offset_x, offset_y)
 
@@ -500,22 +405,12 @@ def run_game():
         char = animations[last_direction][frame_index]
         win.blit(char, (x, y))
 
+        # Update player_center based on current x,y for drawing and aiming
+        char_rect = char.get_rect(topleft=(x, y))
+        player_center = char_rect.center
+
         # Crosshair
-        char_rect = char.get_rect(topleft=(x, y))
-        player_center = char_rect.center
         draw_crosshair(win, player_center)
-
-        char = animations[last_direction][frame_index]
-        win.blit(char, (x, y))
-
-        char = animations[last_direction][frame_index]
-        win.blit(char, (x, y))
-
-        # Draw the crosshair around the player
-        char_rect = char.get_rect(topleft=(x, y))
-        player_center = char_rect.center
-        draw_crosshair(win, player_center)
-
 
         bar_x = offset_x
         bar_y = offset_y - 40
@@ -529,12 +424,37 @@ def run_game():
             if fill > 0:
                 fill_w = int(BAR_W * fill)
                 pygame.draw.rect(win, (225, 225, 225), (x_pos, y_pos, fill_w, BAR_H))
+        
+        # Attack cooldown bar
+        bar_w, bar_h = 100, 12
+        bar_x = offset_x
+        bar_y = offset_y - 60
+        pygame.draw.rect(win, (100, 100, 100), (bar_x, bar_y, bar_w, bar_h))  # bg
+
+        if cooldown_timer > 0:
+            ratio = 1 - (cooldown_timer / (attack_duration + attack_cooldown))
+            fill_w = int(bar_w * ratio)
+            pygame.draw.rect(win, (255, 0, 0), (bar_x, bar_y, fill_w, bar_h))
+        else:
+            pygame.draw.rect(win, (0, 200, 0), (bar_x, bar_y, bar_w, bar_h))  # ready
+
+        if attacking:
+            px, py = player_center
+            progress = 1 - (attack_timer / attack_duration)  # 0 → 1
+            current_angle = swing_start_angle - swing_arc/2 + swing_arc * progress
+
+            radius = 50
+            sword_center_x = px + radius * math.cos(math.radians(current_angle))
+            sword_center_y = py + radius * math.sin(math.radians(current_angle))
+
+            rotated_sword = pygame.transform.rotate(sword_img, -current_angle)
+            rect = rotated_sword.get_rect(center=(sword_center_x, sword_center_y))
+            win.blit(rotated_sword, rect.topleft)
 
         pygame.display.update()
-
 
 # ======================
 # START GAME
 # ======================
 if __name__ == "__main__":
-    main_menu()
+    run_game()
