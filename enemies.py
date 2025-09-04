@@ -587,7 +587,7 @@ def spawn_enemies(
     offset_y: int,
     valid_tile: str = ".",
     enemy_size: int = 48,
-    speed: float = 1.5,
+    speed: float = 1,
     kind: str = "zombie"  # new: "zombie" (default), "slime", or "mix"
 ) -> List[Enemy]:
     HEIGHT = len(game_map)
@@ -653,7 +653,7 @@ def spawn_enemies(
             return e
         if kind_choice == "ghost":
             g_size = enemy_size
-            g_speed = max(0.5, speed * 1.1)
+            g_speed = max(0.5, speed * 0.5)
             g_hp = 5
             sprite_dict = load_enemy_sprites(ghost_files, g_size) or None
             # make ghost sprites slightly transparent if loaded
