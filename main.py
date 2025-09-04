@@ -3,58 +3,31 @@ import sys
 import math
 import os
 import random
+from pathlib import Path
 
-# ======================
-# MAIN MENU
-# ======================
-def main_menu():
-    pygame.init()
-    screen_info = pygame.display.Info()
-    win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
-    pygame.display.set_caption("Main Menu")
-    clock = pygame.time.Clock()
-
-    font = pygame.font.SysFont(None, 72)
-    title = font.render("My Game", True, (255, 255, 255))
-    start = font.render("Press ENTER to Start", True, (200, 200, 200))
-    quit_txt = font.render("Press ESC to Quit", True, (200, 200, 200))
-
-    while True:
-        # recalc every frame in case resolution changed
-        screen_w, screen_h = win.get_size()
-
-        win.fill((0, 0, 0))
-        win.blit(title, (screen_w//2 - title.get_width()//2, screen_h//3))
-        win.blit(start, (screen_w//2 - start.get_width()//2, screen_h//2))
-        win.blit(quit_txt, (screen_w//2 - quit_txt.get_width()//2, screen_h//2 + 100))
-
-        pygame.display.flip()
-        clock.tick(60)
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_RETURN:  # Start game
-                    run_game()
-                    # re-create menu screen after game ends
-                    win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
-                elif event.key == pygame.K_ESCAPE:  # Quit
-                    pygame.quit()
-                    sys.exit()
+BASE_DIR = Path(__file__).parent
+def asset_path(*parts):
+    return str(BASE_DIR.joinpath(*parts))
 
 # ======================
 # GAME LOOP
 # ======================
-def run_game():
+def run_game(screen=None):
+    """
+    If 'screen' is None, create a fullscreen display (legacy behavior).
+    If a pygame Surface is provided in 'screen', use it and do NOT call set_mode()
+    (prevents changing the system display/resolution when launched from the menu).
+    """
     # --- Common init ---
-    pygame.init()
-    screen_info = pygame.display.Info()
-    win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
-    pygame.display.set_caption("Walking Character + Map")
     clock = pygame.time.Clock()
+    if screen is None:
+        pygame.init()
+        screen_info = pygame.display.Info()
+        win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
+        pygame.display.set_caption("Walking Character + Map")
+    else:
+        # use the provided surface (do not recreate display)
+        win = screen
 
     # ======================
     # MAP DATA AND LOADER
@@ -63,156 +36,97 @@ def run_game():
     WIDTH = 13
     HEIGHT = 13
 
-    WALL_TILES = {"-", "|", "A", "B", "C", "D", "#"}
+    WALL_TILES = {"-", "|", "A", "B", "C", "D", "#", "0", "I"}
     LAVA_TILE = "X"
+    TRAP_TILE = "T"
 
-    MAPS = [
-        [   # Map 1
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 2
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 3
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".","X","X",".",".",".",".",".","X","X",".","|"],
-            ["|",".","X",".",".",".",".",".",".",".","X",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".","#","#","#",".",".",".",".","|"],
-            ["|",".",".",".",".","#","#","#",".",".",".",".","|"],
-            ["|",".",".",".",".","#","#","#",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".","X",".",".",".",".",".",".",".","X",".","|"],
-            ["|",".","X","X",".",".",".",".",".","X","X",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 4
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 5
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 6
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".","X","X",".",".",".","X","X",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
+    def load_map_from_file(filename):
+        """Load a map file from project maps/ folder. If missing, return a default floor map.
+           Ensures result is exactly HEIGHT x WIDTH by padding/truncating."""
+        full_path = asset_path("maps", filename)
+        if os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                raw_lines = [list(line.rstrip("\n")) for line in f.readlines()]
+        else:
+            print(f"Warning: map file not found: {full_path}. Using empty floor map.")
+            raw_lines = [['.' for _ in range(WIDTH)] for _ in range(HEIGHT)]
 
-        ],
-        [   # Map 7
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","X","X",".",".",".","#","#",".",".","|"],
-            ["|",".",".","X","X",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","X","X",".",".","|"],
-            ["|",".",".","#","#",".",".",".","X","X",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ],
-        [   # Map 8
-            ["A","-","-","-","-","-","-","-","-","-","-","-","B"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".","#","#",".",".",".","#","#",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["|",".",".",".",".",".",".",".",".",".",".",".","|"],
-            ["C","-","-","-","-","-","-","-","-","-","-","-","D"],
-        ]
-    ]
+        # Normalize to HEIGHT x WIDTH
+        lines = []
+        for r in range(HEIGHT):
+            if r < len(raw_lines):
+                row = raw_lines[r]
+                if len(row) < WIDTH:
+                    row = row + ['.'] * (WIDTH - len(row))
+                elif len(row) > WIDTH:
+                    row = row[:WIDTH]
+            else:
+                row = ['.'] * WIDTH
+            lines.append(row)
+        return lines
+
+    # --- Add MAPS definition so pick_map() can use it ---
+    MAPS = [load_map_from_file(f"map{i}.txt") for i in range(1, 16)]
 
     def load_sprite(filename, size=TILE_SIZE, rotation=0):
-        path = os.path.join("sprites", filename)
-        img = pygame.image.load(path).convert_alpha()
-        img = pygame.transform.scale(img, (size, size))
-        if rotation != 0:
-            img = pygame.transform.rotate(img, rotation)
-        return img
+        """Load sprite from project sprites/ folder. Return visible placeholder on failure."""
+        full_path = asset_path("sprites", filename)
+        try:
+            img = pygame.image.load(full_path).convert_alpha()
+            img = pygame.transform.scale(img, (size, size))
+            if rotation != 0:
+                img = pygame.transform.rotate(img, rotation)
+            return img
+        except Exception:
+            # visible placeholder (keeps program running when sprites missing)
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            surf.fill((140, 140, 140, 255))
+            line_w = max(1, size // 12)
+            pygame.draw.line(surf, (200, 30, 30), (0, 0), (size, size), line_w)
+            pygame.draw.line(surf, (200, 30, 30), (0, size), (size, 0), line_w)
+            if rotation != 0:
+                surf = pygame.transform.rotate(surf, rotation)
+            return surf
 
+    # NOTE: Ensure the sprites directory contains the required PNGs used below.
     SPRITES = {
         "-": load_sprite("wall_edge.png"),
-        "|": load_sprite("wall_edge.png", rotation=90),
+        "|": load_sprite("wall_side.png"),
+        "I": load_sprite("wall_side.png", rotation=180),
         "X": load_sprite("lava.png"),
-        "A": load_sprite("wall_corner.png", rotation=90),
-        "B": load_sprite("wall_corner.png"),
-        "C": load_sprite("wall_corner.png", rotation=180),
-        "D": load_sprite("wall_corner.png", rotation=-90),
-        "#": load_sprite("wall_middle.png")
+        "A": pygame.transform.flip(load_sprite("wall_corner_1.png"), True, False),
+        "B": load_sprite("wall_corner_1.png"),
+        "C": pygame.transform.flip(load_sprite("wall_corner_2.png"), True, False),
+        "D": load_sprite("wall_corner_2.png"),
+        "0": load_sprite("wall_middle_1.png"),
+        "#": load_sprite("wall_middle_2.png"),
+        "T": load_sprite("trap_off.png")
     }
+    
+    # Sword sprite
+    sword_img = load_sprite("sword.png", size=48)
+    attack_duration = 250  # ms swing
+    attack_cooldown = 600  # ms cooldown after swing
+    attacking = False
+    attack_timer = 0
+    cooldown_timer = 0
+    swing_start_angle = 0
+    swing_arc = 120  # degrees of swing
+
+    # Trap sprites
+    trap_off_img = load_sprite("trap_off.png")
+    trap_on_img = load_sprite("trap_on.png")
+    trap_toggle_interval = 1500  # ms (1.5s toggle)
+    trap_timer = 0
+    trap_active = False
 
     FLOOR_SPRITES = [
         load_sprite("floor_1.png"),
         load_sprite("floor_2.png"),
-        load_sprite("floor_3.png")
+        load_sprite("floor_3.png"),
+        load_sprite("floor_4.png"),
+        load_sprite("floor_5.png"),
+        load_sprite("floor_6.png")
     ]
 
     def pick_map():
@@ -224,15 +138,40 @@ def run_game():
                     floor_choices[y][x] = random.choice(FLOOR_SPRITES)
         return game_map, floor_choices
 
-    def draw_map(win, game_map, floor_choices, offset_x, offset_y):
+    def draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active):
         for y in range(HEIGHT):
             for x in range(WIDTH):
                 tile = game_map[y][x]
                 if tile == ".":
                     sprite = floor_choices[y][x]
+                elif tile == "T":
+                    sprite = trap_on_img if trap_active else trap_off_img
                 else:
                     sprite = SPRITES[tile]
                 win.blit(sprite, (offset_x + x*TILE_SIZE, offset_y + y*TILE_SIZE))
+    
+    def draw_crosshair(win, player_pos):
+        mx, my = pygame.mouse.get_pos()
+        px, py = player_pos
+        angle = math.atan2(my - py, mx - px)
+
+        radius = 50  # distance from player
+        cross_x = px + radius * math.cos(angle)
+        cross_y = py + radius * math.sin(angle)
+
+        # small circle as crosshair marker
+        pygame.draw.circle(win, (255, 255, 255), (int(cross_x), int(cross_y)), 8, 4)
+    
+    def draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y):
+        # Shadow ellipse dimensions
+        shadow_w = char_size * 0.8
+        shadow_h = char_size * 0.4
+        shadow_x = x + (char_size - shadow_w) / 2
+        shadow_y = y + char_size - shadow_h / 2
+
+        shadow = pygame.Surface((int(shadow_w), int(shadow_h)), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 100), shadow.get_rect())
+        win.blit(shadow, (shadow_x, shadow_y))
 
     def can_move(new_x, new_y, game_map, dashing=False):
         foot_width = char_size // 2
@@ -259,21 +198,34 @@ def run_game():
                 return False
 
         return True
+    
+    def precompute_rotations(image, step=3):
+        rotations = {}
+        for angle in range(0, 360, step):
+            rotations[angle] = pygame.transform.rotate(image, -angle)
+        return rotations
+
+    sword_rotations = precompute_rotations(sword_img, step=3)
 
     # ======================
     # CHARACTER SETUP
     # ======================
     def load_char_sprite(name, size):
-        path = os.path.join("sprites", name)
-        return pygame.transform.scale(
-            pygame.image.load(path).convert_alpha(),
-            (size, size)
-        )
+        """Load character sprite from project sprites/ folder or return placeholder."""
+        full_path = asset_path("sprites", name)
+        try:
+            img = pygame.image.load(full_path).convert_alpha()
+            return pygame.transform.scale(img, (size, size))
+        except Exception:
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            surf.fill((90, 120, 200, 255))
+            pygame.draw.rect(surf, (0, 0, 0), surf.get_rect(), max(1, size//16))
+            return surf
 
     char_size = 48
     vel = 4
-    dash_speed = 14
-    dash_duration = 175
+    dash_speed = 16
+    dash_duration = 200
     stamina_max = 3.0
     stamina_regen_rate = 0.5
 
@@ -326,13 +278,78 @@ def run_game():
     dash_timer = 0
     dash_dir = (0, 0)
 
+    # initialize values that were referenced before assignment
+    current_angle = 0.0
+    # simple initial player_center based on x,y
+    player_center = (x + char_size // 2, y + char_size // 2)
+
+    # Heart system
+    hearts = 3
+    # 48px hearts, full and empty variants (ensure heart_1.png and heart_0.png exist)
+    heart_full = load_sprite("heart_1.png", size=48)
+    heart_empty = load_sprite("heart_0.png", size=48)
+    heart_spacing = 0
+     # track whether player was on an active trap in the previous frame
+    on_trap_prev = False
+
     run = True
     while run:
         dt = clock.tick(60)
 
+        # Update trap timer
+        trap_timer += dt
+        if trap_timer >= trap_toggle_interval:
+            trap_timer = 0
+            trap_active = not trap_active
+
+        # Timers should be updated each frame, not just when events occur
+        if attacking:
+            attack_timer -= dt
+            if attack_timer <= 0:
+                attacking = False
+                attack_timer = 0
+
+        if cooldown_timer > 0:
+            cooldown_timer -= dt
+            if cooldown_timer < 0:
+                cooldown_timer = 0
+
         for event in pygame.event.get():
-            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                return  # back to menu
+            if event.type == pygame.QUIT:
+                return ("menu", None)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                try:
+                    snapshot = win.copy()
+                except Exception:
+                    snapshot = None
+                action = show_pause_overlay(snapshot, win)
+                if isinstance(action, tuple) and action[0] == "resume":
+                    continue
+                if isinstance(action, tuple) and action[0] == "menu":
+                    return ("menu", None)
+                if isinstance(action, tuple) and action[0] == "options":
+                    # open the full options UI from menu.py and apply changes without quitting
+                    import menu
+                    opt_res = menu.show_options(snapshot, win)
+                    if isinstance(opt_res, tuple) and opt_res[0] == "resolution_changed":
+                        new_size = opt_res[1]
+                        # recreate display surface in-place and update local layout
+                        try:
+                            win = pygame.display.set_mode(new_size)
+                        except Exception:
+                            win = screen  # fallback, keep current
+                        screen_width, screen_height = win.get_size()
+                        offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
+                        offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
+
+                        # continue game
+                        continue
+                    # if resume or other, continue the game loop
+                    continue
+                if isinstance(action, tuple) and action[0] == "shop":
+                    # placeholder for pause->shop
+                    # simply continue for now
+                    continue
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_e:
                 game_map, floor_choices = pick_map()
@@ -375,6 +392,18 @@ def run_game():
                         dy_tmp /= norm
                     dash_dir = (dx_tmp, dy_tmp)
 
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # left click
+                if not attacking and cooldown_timer <= 0:
+                    attacking = True
+                    attack_timer = attack_duration
+                    cooldown_timer = attack_duration + attack_cooldown
+                    # Lock swing start angle toward mouse; compute player center now
+                    mx, my = pygame.mouse.get_pos()
+                    px = x + char_size // 2
+                    py = y + char_size // 2
+                    player_center = (px, py)
+                    swing_start_angle = math.degrees(math.atan2(my - py, mx - px))
+
         dx, dy = 0, 0
         if is_dashing:
             dx, dy = dash_dir
@@ -400,6 +429,7 @@ def run_game():
             speed = dash_speed
             dash_timer -= dt
             if dash_timer <= 0:
+                # check for lava under feet after dash ends
                 foot_width = char_size // 2
                 foot_height = 10
                 foot_x = x + (char_size - foot_width) // 2
@@ -414,8 +444,7 @@ def run_game():
                     tile_y = int((py - offset_y) // TILE_SIZE)
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
-                            print("You died in lava!")
-                            return  # back to menu
+                            return ("menu", None)
                 is_dashing = False
                 if pressed_dirs:
                     last_direction = pressed_dirs[-1]
@@ -432,6 +461,7 @@ def run_game():
                 y += dy * speed
 
         if is_dashing and dash_timer <= 0:
+            # check for lava under feet after dash ends
             foot_width = char_size // 2
             foot_height = 10
             foot_x = x + (char_size - foot_width) // 2
@@ -446,8 +476,39 @@ def run_game():
                 tile_y = int((py - offset_y) // TILE_SIZE)
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
-                        print("You died in lava!")
-                        return  # back to menu
+                        return ("menu", None)
+            is_dashing = False
+            if pressed_dirs:
+                last_direction = pressed_dirs[-1]
+
+        # Always check traps (not just after dash)
+        foot_width = char_size // 2
+        foot_height = 10
+        foot_x = x + (char_size - foot_width) // 2
+        foot_y = y + char_size - foot_height
+        foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
+
+        # determine if any foot point is on an active trap this frame
+        on_trap_now = False
+        for px, py in [
+            (foot_rect.left, foot_rect.bottom - 1),
+            (foot_rect.right - 1, foot_rect.bottom - 1),
+            (foot_rect.centerx, foot_rect.bottom - 1)
+        ]:
+            tile_x = int((px - offset_x) // TILE_SIZE)
+            tile_y = int((py - offset_y) // TILE_SIZE)
+            if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
+                if game_map[tile_y][tile_x] == TRAP_TILE and trap_active:
+                    on_trap_now = True
+                    break
+
+        # only apply damage when transitioning from NOT on an active trap to ON an active trap
+        if on_trap_now and not on_trap_prev:
+            hearts -= 1
+            if hearts <= 0:
+                return ("menu", None)
+
+        on_trap_prev = on_trap_now
 
         if stamina < stamina_max:
             stamina += stamina_regen_rate * (dt / 1000.0)
@@ -462,11 +523,26 @@ def run_game():
         else:
             frame_index = 0
 
-        win.fill((0, 0, 0))
-        draw_map(win, game_map, floor_choices, offset_x, offset_y)
+        # Use current_angle only after initialization (we initialized it above)
+        angle = int(current_angle) // 3 * 3  # snap to nearest 3°
+        # rotated_sword = sword_rotations[angle]  # not used directly here
 
+        win.fill((0, 0, 0))
+        draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
+
+        # Draw shadow first (under character)
+        draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
+
+        # Then draw character
         char = animations[last_direction][frame_index]
         win.blit(char, (x, y))
+
+        # Update player_center based on current x,y for drawing and aiming
+        char_rect = char.get_rect(topleft=(x, y))
+        player_center = char_rect.center
+
+        # Crosshair
+        draw_crosshair(win, player_center)
 
         bar_x = offset_x
         bar_y = offset_y - 40
@@ -480,12 +556,127 @@ def run_game():
             if fill > 0:
                 fill_w = int(BAR_W * fill)
                 pygame.draw.rect(win, (225, 225, 225), (x_pos, y_pos, fill_w, BAR_H))
+        
+        # Attack cooldown bar
+        bar_w, bar_h = 100, 12
+        bar_x = offset_x
+        bar_y = offset_y - 60
+        pygame.draw.rect(win, (100, 100, 100), (bar_x, bar_y, bar_w, bar_h))  # bg
+
+        if cooldown_timer > 0:
+            ratio = 1 - (cooldown_timer / (attack_duration + attack_cooldown))
+            fill_w = int(bar_w * ratio)
+            pygame.draw.rect(win, (255, 0, 0), (bar_x, bar_y, fill_w, bar_h))
+        else:
+            pygame.draw.rect(win, (0, 200, 0), (bar_x, bar_y, bar_w, bar_h))  # ready
+
+        if attacking:
+            px, py = player_center
+            progress = 1 - (attack_timer / attack_duration)  # 0 → 1
+            current_angle = swing_start_angle - swing_arc/2 + swing_arc * progress
+
+            radius = 50
+            sword_center_x = px + radius * math.cos(math.radians(current_angle))
+            sword_center_y = py + radius * math.sin(math.radians(current_angle))
+
+            rotated_sword = pygame.transform.rotate(sword_img, -current_angle)
+            rect = rotated_sword.get_rect(center=(sword_center_x, sword_center_y))
+            win.blit(rotated_sword, rect.topleft)
+
+        # Draw 3 hearts to the right of the map (aligned to map's right edge).
+        total_hearts = 3
+        heart_w = heart_full.get_width()
+        heart_h = heart_full.get_height()
+        margin = 0
+        # place hearts flush to right side of the map area
+        start_x = offset_x + WIDTH * TILE_SIZE - (total_hearts * heart_w) - margin
+        # align hearts vertically with the stamina bar (centered on the bar)
+        heart_y = bar_y + (bar_h - heart_h) // 2
+        for i in range(total_hearts):
+            hx = start_x + i * (heart_w + heart_spacing)
+            img = heart_full if i < hearts else heart_empty
+            win.blit(img, (hx, heart_y))
 
         pygame.display.update()
 
+def show_pause_overlay(snapshot, win_surface):
+    """Show pause overlay and return one of:
+       ("resume", None), ("options", None), ("shop", None), ("menu", None)"""
+    sw, sh = win_surface.get_size()
+    # create blurred snapshot
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
+            blurred = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            blurred = pygame.Surface((sw, sh))
+            blurred.fill((0, 0, 0))
+    else:
+        blurred = pygame.Surface((sw, sh))
+        blurred.fill((0, 0, 0))
 
-# ======================
+    font_title = pygame.font.SysFont("arial", 48, bold=True)
+    font_btn = pygame.font.SysFont("arial", 28, bold=True)
+
+    # define buttons: Resume, Options, Shop, Quit to Menu
+    resume_rect = pygame.Rect((sw//2 - 120, sh//2 - 80, 240, 40))
+    options_rect = pygame.Rect((sw//2 - 120, sh//2 - 30, 240, 40))
+    shop_rect = pygame.Rect((sw//2 - 120, sh//2 + 20, 240, 40))
+    quit_rect = pygame.Rect((sw//2 - 120, sh//2 + 70, 240, 40))
+
+    clock_pause = pygame.time.Clock()
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return ("menu", None)
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    return ("resume", None)
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx,my = ev.pos
+                if resume_rect.collidepoint((mx,my)):
+                    return ("resume", None)
+                if options_rect.collidepoint((mx,my)):
+                    return ("options", None)
+                if shop_rect.collidepoint((mx,my)):
+                    return ("shop", None)
+                if quit_rect.collidepoint((mx,my)):
+                    return ("menu", None)
+
+        # draw blurred background + overlay + panel onto the provided surface
+        win_surface.blit(blurred, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,140))
+        win_surface.blit(overlay, (0,0))
+
+        panel_w, panel_h = 520, 360
+        panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+        pygame.draw.rect(win_surface, (30,30,30), panel)
+        pygame.draw.rect(win_surface, (120,120,120), panel, 3)
+
+        title_surf = font_title.render("Paused", True, (220,220,220))
+        win_surface.blit(title_surf, title_surf.get_rect(center=(sw//2, panel.top + 40)))
+
+        # draw buttons
+        pygame.draw.rect(win_surface, (200,200,200), resume_rect)
+        pygame.draw.rect(win_surface, (200,200,200), options_rect)
+        pygame.draw.rect(win_surface, (200,200,200), shop_rect)
+        pygame.draw.rect(win_surface, (200,200,200), quit_rect)
+        win_surface.blit(font_btn.render("Resume (Esc)", True, (0,0,0)), font_btn.render("Resume (Esc)", True, (0,0,0)).get_rect(center=resume_rect.center))
+        win_surface.blit(font_btn.render("Options", True, (0,0,0)), font_btn.render("Options", True, (0,0,0)).get_rect(center=options_rect.center))
+        win_surface.blit(font_btn.render("Shop", True, (0,0,0)), font_btn.render("Shop", True, (0,0,0)).get_rect(center=shop_rect.center))
+        win_surface.blit(font_btn.render("Quit to Menu", True, (0,0,0)), font_btn.render("Quit to Menu", True, (0,0,0)).get_rect(center=quit_rect.center))
+
+        pygame.display.update()
+        clock_pause.tick(60)
+
+# ======================   
 # START GAME
 # ======================
 if __name__ == "__main__":
-    main_menu()
+    # Import and launch the menu from menu.py
+    import menu
+    menu.run_menu()
+    # Import and launch the menu from menu.py
+    import menu
+    menu.run_menu()
