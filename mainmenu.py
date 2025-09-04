@@ -121,8 +121,12 @@ while True:
 
         elif state == "options":
             if event.type == pygame.MOUSEBUTTONDOWN:
-                if OPTIONS_BACK.checkForInput(mouse_pos):
+                # Resume returns to menu (or could be changed to resume game if invoked from in-game)
+                if RESUME_BUTTON.checkForInput(mouse_pos):
                     state = "menu"
+                if QUIT_BUTTON_OPT.checkForInput(mouse_pos):
+                    pygame.quit()
+                    sys.exit()
 
         elif state == "play":
             # nothing here — handled by main.run_game()
@@ -152,14 +156,19 @@ while True:
 
     elif state == "options":
         SCREEN.fill("white")
+        OPTIONS_TEXT = get_font(45).render("SETTINGS", True, "Black")
+        SCREEN.blit(OPTIONS_TEXT, OPTIONS_TEXT.get_rect(center=(SCREEN_W//2, SCREEN_H//4)))
 
-        OPTIONS_TEXT = get_font(45).render("This is the OPTIONS screen.", True, "Black")
-        SCREEN.blit(OPTIONS_TEXT, OPTIONS_TEXT.get_rect(center=(SCREEN_W//2, SCREEN_H//3)))
+        # Resume button (go back to menu)
+        RESUME_BUTTON = Button(None, (SCREEN_W//2, SCREEN_H//2 - SCREEN_H//10),
+                               "RESUME", get_font(50), "Black", "Green")
+        # Quit button (exit game)
+        QUIT_BUTTON_OPT = Button(None, (SCREEN_W//2, SCREEN_H//2 + SCREEN_H//10),
+                                 "QUIT", get_font(50), "Black", "Red")
 
-        OPTIONS_BACK = Button(None, (SCREEN_W//2, SCREEN_H - SCREEN_H//4),
-                              "BACK", get_font(50), "Black", "Green")
-        OPTIONS_BACK.changeColor(mouse_pos)
-        OPTIONS_BACK.update(SCREEN)
+        for btn in (RESUME_BUTTON, QUIT_BUTTON_OPT):
+            btn.changeColor(mouse_pos)
+            btn.update(SCREEN)
 
     elif state == "play":
         main.run_game()   # now returns instead of quitting pygame

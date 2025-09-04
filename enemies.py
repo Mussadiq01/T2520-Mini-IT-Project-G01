@@ -36,6 +36,9 @@ class Enemy:
         self.can_jump_lava = can_jump_lava  # store flag
         self.can_fly = can_fly  # flying ignores walkable checks
 
+        # special-case marker for slimes (spawn sets this)
+        self.is_slime = False
+
         # casting (mage) state
         self.can_cast = can_cast
         self.cast_cooldown = cast_cooldown
@@ -43,6 +46,16 @@ class Enemy:
         self.projectile_speed = projectile_speed
         self.projectiles: List[Dict[str, float]] = []  # each: {'x','y','vx','vy','speed'}
         self.cast_stop_distance = cast_stop_distance
+
+        # Visual flash when hit
+        self.flash_timer = 0            # ms remaining to show red flash
+        self.flash_duration = 180      # ms length of flash
+
+        # Knockback state (applied over short duration)
+        self.kb_vx = 0.0
+        self.kb_vy = 0.0
+        self.kb_time = 0               # ms remaining for knockback
+        self.kb_duration = 160         # duration of knockback in ms
 
         # prejump state: when true the enemy displays the jump sprite for a short time
         # before performing the actual jump to the landing spot.
@@ -59,6 +72,23 @@ class Enemy:
         if self.hp <= 0:
             self.alive = False
 
+    def apply_damage(self, amount: int, kb_x: float = 0.0, kb_y: float = 0.0, kb_force: float = 40.0, kb_duration: int = 160) -> None:
+        """Apply damage, start flash, and setup knockback away from (0,0) direction vector kb_x,kb_y."""
+        self.take_damage(amount)
+        # flash
+        self.flash_timer = self.flash_duration
+        # set knockback only if still alive (optional) or always allow slight displacement
+        norm = math.hypot(kb_x, kb_y)
+        if norm > 1e-6:
+            nx = kb_x / norm
+            ny = kb_y / norm
+            # scale knockback by size so small enemies move a bit more visually
+            scale = 48.0 / max(16.0, float(self.size))
+            self.kb_vx = nx * kb_force * scale
+            self.kb_vy = ny * kb_force * scale
+            self.kb_time = kb_duration
+            self.kb_duration = kb_duration
+
     def update(
         self,
         dt: int,
@@ -69,6 +99,47 @@ class Enemy:
     ) -> None:
         if not self.alive:
             return
+
+        # process knockback first (applied over kb_duration)
+        if self.kb_time > 0 and (abs(self.kb_vx) > 1e-6 or abs(self.kb_vy) > 1e-6):
+            frac = min(dt, self.kb_time) / float(max(1, self.kb_duration))
+            dx_k = self.kb_vx * frac
+            dy_k = self.kb_vy * frac
+            # attempt full move, else try axis-separated, else cancel remaining kb
+            new_x = self.x + dx_k
+            new_y = self.y + dy_k
+            try:
+                if is_walkable(new_x, new_y):
+                    self.x = new_x
+                    self.y = new_y
+                else:
+                    moved = False
+                    if is_walkable(self.x + dx_k, self.y):
+                        self.x += dx_k
+                        moved = True
+                    if is_walkable(self.x, self.y + dy_k):
+                        self.y += dy_k
+                        moved = True
+                    if not moved:
+                        # blocked -> cancel remaining knockback
+                        self.kb_vx = 0.0
+                        self.kb_vy = 0.0
+                        self.kb_time = 0
+            except Exception:
+                # defensive fallback
+                self.x = new_x
+                self.y = new_y
+            self.kb_time -= dt
+            if self.kb_time <= 0:
+                self.kb_vx = 0.0
+                self.kb_vy = 0.0
+                self.kb_time = 0
+
+        # decrement flash timer
+        if self.flash_timer > 0:
+            self.flash_timer -= dt
+            if self.flash_timer < 0:
+                self.flash_timer = 0
 
         px, py = player_pos
         cx = self.x + self.size / 2
@@ -84,6 +155,103 @@ class Enemy:
         # keep original normalized direction for facing (don't overwrite later)
         orig_nx, orig_ny = nx, ny
 
+        # --- Slime special behaviour: do NOT walk toward player, but still attempt to detect lava
+        # and trigger the prejump logic (jump over lava) when appropriate.
+        if getattr(self, "is_slime", False) and self.can_jump_lava and is_lava is not None and (abs(nx) > 1e-4 or abs(ny) > 1e-4):
+            # reuse the existing lava scanning logic (search ahead from slime center)
+            cx_center = self.x + self.size / 2
+            cy_center = self.y + self.size / 2
+            STEP = max(8, int(self.size / 2))
+            MAX_DIST = max(48, int(self.size)) * 6
+            samples = max(1, int(MAX_DIST / STEP))
+            half = self.size / 2
+            lateral_offsets = [-half + 4, 0, half - 4]
+            perp_x = -ny
+            perp_y = nx
+            first_lava_idx = None
+            for i in range(1, samples + 1):
+                sx = cx_center + nx * STEP * i
+                sy = cy_center + ny * STEP * i
+                hit = False
+                for ox in lateral_offsets:
+                    lx = sx + perp_x * ox
+                    ly = sy + perp_y * ox
+                    if is_lava(lx, ly):
+                        hit = True
+                        break
+                if hit:
+                    first_lava_idx = i
+                    break
+            if first_lava_idx is not None:
+                end_idx = first_lava_idx
+                for j in range(first_lava_idx + 1, samples + 1):
+                    sx = cx_center + nx * STEP * j
+                    sy = cy_center + ny * STEP * j
+                    hit = False
+                    for ox in lateral_offsets:
+                        lx = sx + perp_x * ox
+                        ly = sy + perp_y * ox
+                        if is_lava(lx, ly):
+                            hit = True
+                            break
+                    if not hit:
+                        end_idx = j
+                        break
+                min_extra = max(1, int(self.size / STEP))
+                max_extra = min(8, samples - end_idx)
+                TILE_SEARCH = max(48, int(self.size))
+                found = False
+                for extra in range(min_extra, max_extra + 1):
+                    k = end_idx + extra
+                    base_cx = cx_center + nx * STEP * k
+                    base_cy = cy_center + ny * STEP * k
+                    for ox_mult in (-1, 0, 1):
+                        for oy_mult in (-1, 0, 1):
+                            landing_cx = base_cx + ox_mult * TILE_SEARCH
+                            landing_cy = base_cy + oy_mult * TILE_SEARCH
+                            landing_x = landing_cx - self.size / 2
+                            landing_y = landing_cy - self.size / 2
+                            bad = False
+                            for lo in lateral_offsets:
+                                lx = landing_cx + perp_x * lo
+                                ly = landing_cy + perp_y * lo
+                                if is_lava(lx, ly):
+                                    bad = True
+                                    break
+                            if bad:
+                                continue
+                            if not is_walkable(landing_x, landing_y):
+                                continue
+                            blocked = False
+                            for m in range(1, k + 1):
+                                sx = cx_center + nx * STEP * m
+                                sy = cy_center + ny * STEP * m
+                                for lo in lateral_offsets:
+                                    sample_x = sx + perp_x * lo
+                                    sample_y = sy + perp_y * lo
+                                    sample_tl_x = sample_x - self.size / 2
+                                    sample_tl_y = sample_y - self.size / 2
+                                    if (not is_lava(sample_x, sample_y)) and (not is_walkable(sample_tl_x, sample_tl_y)):
+                                        blocked = True
+                                        break
+                                if blocked:
+                                    break
+                            if blocked:
+                                continue
+                            self.prejumping = True
+                            self.prejump_timer = self.prejump_duration
+                            self._landing = (landing_x, landing_y)
+                            found = True
+                            break
+                        if found:
+                            break
+                    if found:
+                        break
+            # slimes do not perform normal walking movement
+            # continue normally (prejump will handle the landing when triggered)
+            # fall through to rest of update (but do not set self.x/self.y walking)
+            pass
+
         # If currently in prejump state, count down and land when timer ends.
         if self.prejumping:
             self.prejump_timer -= dt
@@ -95,7 +263,6 @@ class Enemy:
                 self.prejumping = False
                 self.prejump_timer = 0
                 self._landing = None
-            # while prejumping we don't perform normal movement this frame
         else:
             move = self.speed * (dt / 16.0)
             # mage: if within stop distance, don't move toward player (prevent bumping)
@@ -368,7 +535,16 @@ class Enemy:
                 if not frames:
                     return
                 img = frames[self.frame % len(frames)]
-        surface.blit(img, (int(self.x) + offset_x, int(self.y) + offset_y))
+        # tint red slightly when recently hit
+        draw_img = img
+        if getattr(self, "flash_timer", 0) > 0:
+            try:
+                draw_img = img.copy()
+                draw_img.fill((200, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            except Exception:
+                # fallback: no tint if copy fails
+                draw_img = img
+        surface.blit(draw_img, (int(self.x) + offset_x, int(self.y) + offset_y))
 
         # draw projectiles (if any) — use image when available, otherwise fallback to circle
         if self.can_cast and self.projectiles:
@@ -467,17 +643,18 @@ def spawn_enemies(
     def make_enemy(kind_choice: str, tlx: int, tly: int) -> Enemy:
         if kind_choice == "slime":
             s_size = max(16, int(enemy_size * 0.75))  # slimes a bit smaller by default
-            s_speed = max(0.1, speed * 0.9)           # slightly slower
-            s_hp = 2                                  # tougher than a basic zombie
+            s_speed = 0.0                             # slimes don't walk; they only jump when needed
+            s_hp = 10                                 # slime HP
             sprite_dict = load_enemy_sprites(slime_files, s_size) or None
             ex = tlx + (tile_size - s_size) / 2
             ey = tly + (tile_size - s_size) / 2
-            # pass can_jump_lava=True for slimes
-            return Enemy(ex, ey, s_size, speed=s_speed, hp=s_hp, sprites=sprite_dict, can_jump_lava=True)
+            e = Enemy(ex, ey, s_size, speed=s_speed, hp=s_hp, sprites=sprite_dict, can_jump_lava=True)
+            e.is_slime = True
+            return e
         if kind_choice == "ghost":
             g_size = enemy_size
             g_speed = max(0.5, speed * 1.1)
-            g_hp = 1
+            g_hp = 5
             sprite_dict = load_enemy_sprites(ghost_files, g_size) or None
             # make ghost sprites slightly transparent if loaded
             if sprite_dict:
@@ -493,7 +670,7 @@ def spawn_enemies(
         if kind_choice == "mage":
             m_size = enemy_size
             m_speed = max(0.5, speed * 0.9)
-            m_hp = 1
+            m_hp = 20
             sprite_dict = load_enemy_sprites(mage_files, m_size) or None
             ex = tlx + (tile_size - m_size) / 2
             ey = tly + (tile_size - m_size) / 2
@@ -504,7 +681,7 @@ def spawn_enemies(
                 hp=m_hp,
                 sprites=sprite_dict,
                 can_cast=True,
-                cast_cooldown=1500,
+                cast_cooldown=3000,  # less frequent mage casting
                 projectile_speed=6.0,
                 cast_stop_distance=240  # increased stopping range for mages
             )
@@ -525,7 +702,7 @@ def spawn_enemies(
         else:  # default: zombie
             z_size = enemy_size
             z_speed = speed
-            z_hp = 1
+            z_hp = 15
             sprite_dict = load_enemy_sprites(zombie_files, z_size) or None
             ex = tlx + (tile_size - z_size) / 2
             ey = tly + (tile_size - z_size) / 2

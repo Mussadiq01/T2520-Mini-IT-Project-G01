@@ -104,6 +104,8 @@ def run_game():
     cooldown_timer = 0
     swing_start_angle = 0
     swing_arc = 120  # degrees of swing
+    sword_damage = 5
+    attack_hits = set()  # track enemies hit this swing (store id(enemy))
 
     # Trap sprites
     trap_off_img = load_sprite("trap_off.png")
@@ -259,8 +261,19 @@ def run_game():
     x = offset_x + (WIDTH // 2) * TILE_SIZE
     y = offset_y + 1 * TILE_SIZE
 
-    # spawn up to 6 zombies on safe tiles ('.') — now mix zombies and slimes
+    # spawn enemies
     enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+
+    # Player damage / invincibility / knockback state
+    invincible_timer = 0          # ms remaining of invulnerability
+    invincible_duration = 2000    # 2 seconds invincibility after losing a heart (increased)
+    player_kb_vx = 0.0
+    player_kb_vy = 0.0
+    player_kb_time = 0            # ms remaining for knockback
+    player_kb_duration = 200      # duration of knockback in ms
+    # short on-hit red tint for player (independent from full invincibility)
+    player_flash_timer = 0
+    player_flash_duration = 300   # ms red tint when damaged
 
     pressed_dirs = []
     last_direction = "down"
@@ -273,23 +286,29 @@ def run_game():
     dash_timer = 0
     dash_dir = (0, 0)
 
-    # initialize values that were referenced before assignment
     current_angle = 0.0
-    # simple initial player_center based on x,y
     player_center = (x + char_size // 2, y + char_size // 2)
 
-    # Heart system
     hearts = 3
-    # 48px hearts, full and empty variants (ensure heart_1.png and heart_0.png exist)
     heart_full = load_sprite("heart_1.png", size=48)
     heart_empty = load_sprite("heart_0.png", size=48)
     heart_spacing = 0
-     # track whether player was on an active trap in the previous frame
     on_trap_prev = False
 
     run = True
     while run:
         dt = clock.tick(60)
+
+        # decrement player invincibility & knockback timers
+        if invincible_timer > 0:
+            invincible_timer -= dt
+            if invincible_timer < 0:
+                invincible_timer = 0
+        # decrement player flash timer for red tint
+        if player_flash_timer > 0:
+            player_flash_timer -= dt
+            if player_flash_timer < 0:
+                player_flash_timer = 0
 
         # Update trap timer
         trap_timer += dt
@@ -297,13 +316,12 @@ def run_game():
             trap_timer = 0
             trap_active = not trap_active
 
-        # Timers should be updated each frame, not just when events occur
+        # Timers update
         if attacking:
             attack_timer -= dt
             if attack_timer <= 0:
                 attacking = False
                 attack_timer = 0
-
         if cooldown_timer > 0:
             cooldown_timer -= dt
             if cooldown_timer < 0:
@@ -311,8 +329,16 @@ def run_game():
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                return  # back to menu
+                return
 
+            # Press F to become invincible for 5 seconds
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_f:
+                invincible_timer = 5000
+                player_flash_timer = player_flash_duration
+                # small feedback: reset cooldown so player doesn't get damaged immediately
+                # (invincibility variable is used elsewhere)
+                # no other state change needed
+            
             if event.type == pygame.KEYDOWN and event.key == pygame.K_e:
                 game_map, floor_choices = pick_map()
                 x = offset_x + (WIDTH // 2) * TILE_SIZE
@@ -320,7 +346,6 @@ def run_game():
                 pressed_dirs.clear()
                 is_dashing = False
                 frame_index = 0
-                # respawn enemies for the new map
                 enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
 
             if event.type == pygame.KEYDOWN and event.key in key_to_dir:
@@ -356,35 +381,65 @@ def run_game():
                         dy_tmp /= norm
                     dash_dir = (dx_tmp, dy_tmp)
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # left click
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if not attacking and cooldown_timer <= 0:
                     attacking = True
                     attack_timer = attack_duration
                     cooldown_timer = attack_duration + attack_cooldown
-                    # Lock swing start angle toward mouse; compute player center now
                     mx, my = pygame.mouse.get_pos()
                     px = x + char_size // 2
                     py = y + char_size // 2
                     player_center = (px, py)
                     swing_start_angle = math.degrees(math.atan2(my - py, mx - px))
+                    attack_hits.clear()
+
+        # --- APPLY PLAYER KNOCKBACK (if active) ---
+        knocked = False
+        if player_kb_time > 0:
+            knocked = True
+            frac = min(dt, player_kb_time) / float(max(1, player_kb_duration))
+            dx_k = player_kb_vx * frac
+            dy_k = player_kb_vy * frac
+            new_x = x + dx_k
+            new_y = y + dy_k
+            try:
+                if can_move(new_x, new_y, game_map, dashing=False):
+                    x, y = new_x, new_y
+                else:
+                    if can_move(x + dx_k, y, game_map, dashing=False):
+                        x += dx_k
+                    elif can_move(x, y + dy_k, game_map, dashing=False):
+                        y += dy_k
+                    else:
+                        player_kb_vx = player_kb_vy = 0.0
+                        player_kb_time = 0
+            except Exception:
+                x, y = new_x, new_y
+            player_kb_time -= dt
+            if player_kb_time <= 0:
+                player_kb_vx = player_kb_vy = 0.0
+                player_kb_time = 0
 
         dx, dy = 0, 0
         if is_dashing:
             dx, dy = dash_dir
         else:
             keys = pygame.key.get_pressed()
-            if "left" in pressed_dirs and keys[pygame.K_a]:
-                dx -= 1
-            if "right" in pressed_dirs and keys[pygame.K_d]:
-                dx += 1
-            if "up" in pressed_dirs and keys[pygame.K_w]:
-                dy -= 1
-            if "down" in pressed_dirs and keys[pygame.K_s]:
-                dy += 1
-            if dx != 0 and dy != 0:
-                norm = math.sqrt(dx*dx + dy*dy)
-                dx /= norm
-                dy /= norm
+            if knocked:
+                dx = dy = 0
+            else:
+                if "left" in pressed_dirs and keys[pygame.K_a]:
+                    dx -= 1
+                if "right" in pressed_dirs and keys[pygame.K_d]:
+                    dx += 1
+                if "up" in pressed_dirs and keys[pygame.K_w]:
+                    dy -= 1
+                if "down" in pressed_dirs and keys[pygame.K_s]:
+                    dy += 1
+                if dx != 0 and dy != 0:
+                    norm = math.sqrt(dx*dx + dy*dy)
+                    dx /= norm
+                    dy /= norm
 
         moving = dx != 0 or dy != 0
 
@@ -393,22 +448,21 @@ def run_game():
             speed = dash_speed
             dash_timer -= dt
             if dash_timer <= 0:
-                # check for lava under feet after dash ends
                 foot_width = char_size // 2
                 foot_height = 10
                 foot_x = x + (char_size - foot_width) // 2
                 foot_y = y + char_size - foot_height
                 foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
-                for px, py in [
+                for pxp, pyp in [
                     (foot_rect.left, foot_rect.bottom - 1),
                     (foot_rect.right - 1, foot_rect.bottom - 1),
                     (foot_rect.centerx, foot_rect.bottom - 1)
                 ]:
-                    tile_x = int((px - offset_x) // TILE_SIZE)
-                    tile_y = int((py - offset_y) // TILE_SIZE)
+                    tile_x = int((pxp - offset_x) // TILE_SIZE)
+                    tile_y = int((pyp - offset_y) // TILE_SIZE)
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
-                            return  # back to menu
+                            return
                 is_dashing = False
                 if pressed_dirs:
                     last_direction = pressed_dirs[-1]
@@ -425,52 +479,58 @@ def run_game():
                 y += dy * speed
 
         if is_dashing and dash_timer <= 0:
-            # check for lava under feet after dash ends
             foot_width = char_size // 2
             foot_height = 10
             foot_x = x + (char_size - foot_width) // 2
             foot_y = y + char_size - foot_height
             foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
-            for px, py in [
+            for pxp, pyp in [
                 (foot_rect.left, foot_rect.bottom - 1),
                 (foot_rect.right - 1, foot_rect.bottom - 1),
                 (foot_rect.centerx, foot_rect.bottom - 1)
             ]:
-                tile_x = int((px - offset_x) // TILE_SIZE)
-                tile_y = int((py - offset_y) // TILE_SIZE)
+                tile_x = int((pxp - offset_x) // TILE_SIZE)
+                tile_y = int((pyp - offset_y) // TILE_SIZE)
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
-                        return  # back to menu
+                        return
             is_dashing = False
             if pressed_dirs:
                 last_direction = pressed_dirs[-1]
 
-        # Always check traps (not just after dash)
+        # Always check traps
         foot_width = char_size // 2
         foot_height = 10
         foot_x = x + (char_size - foot_width) // 2
         foot_y = y + char_size - foot_height
         foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
 
-        # determine if any foot point is on an active trap this frame
         on_trap_now = False
-        for px, py in [
+        for pxp, pyp in [
             (foot_rect.left, foot_rect.bottom - 1),
             (foot_rect.right - 1, foot_rect.bottom - 1),
             (foot_rect.centerx, foot_rect.bottom - 1)
         ]:
-            tile_x = int((px - offset_x) // TILE_SIZE)
-            tile_y = int((py - offset_y) // TILE_SIZE)
+            tile_x = int((pxp - offset_x) // TILE_SIZE)
+            tile_y = int((pyp - offset_y) // TILE_SIZE)
             if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                 if game_map[tile_y][tile_x] == TRAP_TILE and trap_active:
                     on_trap_now = True
                     break
 
-        # only apply damage when transitioning from NOT on an active trap to ON an active trap
         if on_trap_now and not on_trap_prev:
             hearts -= 1
+            # give player knockback & invincibility when hit by trap
+            pcx = x + char_size / 2
+            pcy = y + char_size / 2
+            # reduced upward knockback
+            player_kb_vx = 0.0
+            player_kb_vy = -20.0
+            player_kb_time = player_kb_duration
+            invincible_timer = invincible_duration
+            player_flash_timer = player_flash_duration
             if hearts <= 0:
-                return  # back to menu
+                return
 
         on_trap_prev = on_trap_now
 
@@ -487,32 +547,25 @@ def run_game():
         else:
             frame_index = 0
 
-        # Use current_angle only after initialization (we initialized it above)
-        angle = int(current_angle) // 3 * 3  # snap to nearest 3°
-        # rotated_sword = sword_rotations[angle]  # not used directly here
+        angle = int(current_angle) // 3 * 3
 
         win.fill((0, 0, 0))
         draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
-
-        # Draw shadow first (under character)
         draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
 
-        # helpers for enemies to query the world
         def make_is_walkable(size):
             def is_walkable(new_x: float, new_y: float) -> bool:
-                # use a small foot area near bottom of enemy box to test tiles (similar to can_move)
                 foot_width = int(size * 0.5)
                 foot_height = 10
                 foot_x = int(new_x + (size - foot_width) / 2)
                 foot_y = int(new_y + size - foot_height)
-                # check three sample points
-                for px, py in [
+                for pxp, pyp in [
                     (foot_x, foot_y + foot_height - 1),
                     (foot_x + foot_width - 1, foot_y + foot_height - 1),
                     (foot_x + foot_width // 2, foot_y + foot_height - 1)
                 ]:
-                    tile_x = int((px - offset_x) // TILE_SIZE)
-                    tile_y = int((py - offset_y) // TILE_SIZE)
+                    tile_x = int((pxp - offset_x) // TILE_SIZE)
+                    tile_y = int((pyp - offset_y) // TILE_SIZE)
                     if tile_x < 0 or tile_x >= WIDTH or tile_y < 0 or tile_y >= HEIGHT:
                         return False
                     tile = game_map[tile_y][tile_x]
@@ -530,7 +583,6 @@ def run_game():
                 return game_map[tile_y][tile_x] == TRAP_TILE and trap_active
             return False
 
-        # new: helper to detect lava at a world-coordinate (px,py expected in pixels)
         def is_lava(px: float, py: float) -> bool:
             tile_x = int((px - offset_x) // TILE_SIZE)
             tile_y = int((py - offset_y) // TILE_SIZE)
@@ -538,27 +590,124 @@ def run_game():
                 return game_map[tile_y][tile_x] == LAVA_TILE
             return False
 
-        # Update and draw enemies (zombies/slimes)
+        # Update enemies
         for e in enemies:
             if e.alive:
-                # pass is_lava into update so slimes can attempt to jump over lava
+                # pass callbacks; per-enemy view logic lives inside Enemy.update
                 e.update(dt, player_center, make_is_walkable(e.size), on_trap, is_lava)
-        # draw enemies (on top of shadow, behind player)
+        # Draw enemies
         for e in enemies:
             if e.alive:
                 e.draw(win)
 
+        # --- NEW: enemy projectiles can hit the player (mage magic) ---
+        # use player_center computed from previous frame; handle once per frame
+        if invincible_timer <= 0:
+            proj_hit = False
+            pcx, pcy = player_center
+            for e in enemies:
+                if not e.alive or not getattr(e, "projectiles", None):
+                    continue
+                for p in list(e.projectiles):
+                    # projectile position
+                    pxp = p.get('x', 0.0)
+                    pyp = p.get('y', 0.0)
+                    dxp = pxp - pcx
+                    dyp = pyp - pcy
+                    pdist = math.hypot(dxp, dyp)
+                    # choose projectile radius from image if available
+                    proj_radius = 12
+                    proj_img = getattr(e, "projectile_img", None)
+                    if proj_img:
+                        proj_radius = max(8, proj_img.get_width() // 2)
+                    else:
+                        proj_radius = max(8, int(e.size * 0.12))
+                    if pdist <= proj_radius:
+                        # projectile hit player
+                        hearts -= 1
+                        # knockback away from projectile direction
+                        try:
+                            vx = p.get('vx', 0.0)
+                            vy = p.get('vy', 0.0)
+                            kb_force = 30.0
+                            player_kb_vx = vx * kb_force
+                            player_kb_vy = vy * kb_force
+                            player_kb_time = player_kb_duration
+                        except Exception:
+                            pass
+                        invincible_timer = invincible_duration
+                        player_flash_timer = player_flash_duration
+                        # remove the projectile
+                        try:
+                            e.projectiles.remove(p)
+                        except Exception:
+                            pass
+                        proj_hit = True
+                        # check death
+                        if hearts <= 0:
+                            return
+                        break
+                if proj_hit:
+                    break
+
+        # Enemy -> player collision (damage)
+        # smaller hitbox for player (inset on all sides)
+        inset = 10
+        player_rect = pygame.Rect(int(x) + inset, int(y) + inset, char_size - inset*2, char_size - inset*2)
+        if invincible_timer <= 0:
+            for e in enemies:
+                # skip dead enemies and skip direct contact damage from mages (they damage via projectiles)
+                if not e.alive or getattr(e, "can_cast", False):
+                     continue
+                if e.rect().colliderect(player_rect):
+                     hearts -= 1
+                     ecx = e.x + e.size / 2
+                     ecy = e.y + e.size / 2
+                     pcx = x + char_size / 2
+                     pcy = y + char_size / 2
+                     kb_x = pcx - ecx
+                     kb_y = pcy - ecy
+                     norm = math.hypot(kb_x, kb_y)
+                     if norm > 1e-6:
+                         nx = kb_x / norm
+                         ny = kb_y / norm
+                     else:
+                         nx, ny = 0.0, -1.0
+                     kb_force = 20.0   # greatly reduced knockback strength
+                     player_kb_vx = nx * kb_force
+                     player_kb_vy = ny * kb_force
+                     player_kb_time = player_kb_duration
+                     invincible_timer = invincible_duration
+                     # flash player and enemy briefly
+                     player_flash_timer = player_flash_duration
+                     try:
+                         e.flash_timer = e.flash_duration
+                     except Exception:
+                         pass
+                     if hearts <= 0:
+                         return
+                     break
+
         # Then draw character
         char = animations[last_direction][frame_index]
-        win.blit(char, (x, y))
+        # tint character slightly red when recently damaged
+        draw_char = char
+        if player_flash_timer > 0:
+            try:
+                draw_char = char.copy()
+                draw_char.fill((180, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            except Exception:
+                draw_char = char
+        win.blit(draw_char, (x, y))
 
-        # Update player_center based on current x,y for drawing and aiming
+        # Update player_center
         char_rect = char.get_rect(topleft=(x, y))
         player_center = char_rect.center
 
         # Crosshair
         draw_crosshair(win, player_center)
 
+        # HUD: stamina bars
         bar_x = offset_x
         bar_y = offset_y - 40
         BAR_W, BAR_H = 60, 20
@@ -571,13 +720,12 @@ def run_game():
             if fill > 0:
                 fill_w = int(BAR_W * fill)
                 pygame.draw.rect(win, (225, 225, 225), (x_pos, y_pos, fill_w, BAR_H))
-        
+
         # Attack cooldown bar
         bar_w, bar_h = 100, 12
         bar_x = offset_x
         bar_y = offset_y - 60
         pygame.draw.rect(win, (100, 100, 100), (bar_x, bar_y, bar_w, bar_h))  # bg
-
         if cooldown_timer > 0:
             ratio = 1 - (cooldown_timer / (attack_duration + attack_cooldown))
             fill_w = int(bar_w * ratio)
@@ -585,6 +733,7 @@ def run_game():
         else:
             pygame.draw.rect(win, (0, 200, 0), (bar_x, bar_y, bar_w, bar_h))  # ready
 
+        # Attack drawing and hit detection
         if attacking:
             px, py = player_center
             progress = 1 - (attack_timer / attack_duration)  # 0 → 1
@@ -598,14 +747,89 @@ def run_game():
             rect = rotated_sword.get_rect(center=(sword_center_x, sword_center_y))
             win.blit(rotated_sword, rect.topleft)
 
-        # Draw 3 hearts to the right of the map (aligned to map's right edge).
+            # Hit detection (accurate enough): check each alive enemy center against arc and reach
+            sword_reach = 64  # effective reach in pixels from player center
+            for e in enemies:
+                if not e.alive:
+                    continue
+                eid = id(e)
+                if eid in attack_hits:
+                    continue
+                # enemy center
+                ecx = e.x + e.size / 2
+                ecy = e.y + e.size / 2
+                vx = ecx - px
+                vy = ecy - py
+                dist = math.hypot(vx, vy)
+                # allow hit if enemy rectangle intersects reach circle (account for enemy size)
+                if dist > sword_reach + (e.size / 2):
+                    continue
+                # angle to enemy (degrees)
+                ang = math.degrees(math.atan2(vy, vx))
+                diff = (ang - current_angle + 180) % 360 - 180
+                if abs(diff) <= (swing_arc / 2):
+                    # line-of-sight check: sample along ray from player to enemy and ensure no wall tile blocks it.
+                    los_clear = True
+                    if not getattr(e, "can_fly", False):
+                        if dist > 1e-4:
+                            dirx = vx / dist
+                            diry = vy / dist
+                            step = 8
+                            steps = max(1, int(dist // step))
+                            for s in range(1, steps + 1):
+                                sx = px + dirx * (s * step)
+                                sy = py + diry * (s * step)
+                                tx = int((sx - offset_x) // TILE_SIZE)
+                                ty = int((sy - offset_y) // TILE_SIZE)
+                                if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT:
+                                    los_clear = False
+                                    break
+                                if game_map[ty][tx] in WALL_TILES:
+                                    los_clear = False
+                                    break
+                        else:
+                            los_clear = True
+                    if not los_clear:
+                        continue
+                    # hit: deal damage and apply knockback away from player
+                    e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
+                    attack_hits.add(eid)
+
+            # --- New: allow sword to break mage projectiles ---
+            # check every enemy projectile and remove if within swing arc+reach
+            proj_reach = 48  # slightly shorter reach for projectiles
+            for e in enemies:
+                if not e.alive or not getattr(e, "projectiles", None):
+                    continue
+                # iterate copy because we may remove entries
+                for p in list(e.projectiles):
+                    pxp = p['x']
+                    pyp = p['y']
+                    vxp = pxp - px
+                    vyp = pyp - py
+                    pdist = math.hypot(vxp, vyp)
+                    if pdist > proj_reach + max(6, e.size * 0.1):
+                        continue
+                    pang = math.degrees(math.atan2(vyp, vxp))
+                    pdiff = (pang - current_angle + 180) % 360 - 180
+                    if abs(pdiff) <= (swing_arc / 2):
+                        # destroy the projectile (it "breaks")
+                        try:
+                            e.projectiles.remove(p)
+                        except Exception:
+                            pass
+                        # optional: give small feedback by flashing enemy who shot it
+                        try:
+                            e.flash_timer = getattr(e, "flash_duration", 120)
+                        except Exception:
+                            pass
+
+        # Draw hearts
         total_hearts = 3
         heart_w = heart_full.get_width()
         heart_h = heart_full.get_height()
         margin = 0
-        # place hearts flush to right side of the map area
         start_x = offset_x + WIDTH * TILE_SIZE - (total_hearts * heart_w) - margin
-        # align hearts vertically with the stamina bar (centered on the bar)
         heart_y = bar_y + (bar_h - heart_h) // 2
         for i in range(total_hearts):
             hx = start_x + i * (heart_w + heart_spacing)
