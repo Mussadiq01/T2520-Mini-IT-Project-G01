@@ -720,7 +720,6 @@ def run_game():
             if fill > 0:
                 fill_w = int(BAR_W * fill)
                 pygame.draw.rect(win, (225, 225, 225), (x_pos, y_pos, fill_w, BAR_H))
-
         # Attack cooldown bar
         bar_w, bar_h = 100, 12
         bar_x = offset_x
