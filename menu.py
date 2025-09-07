@@ -74,9 +74,7 @@ class Button:
         return self.rect.collidepoint(mouse_pos)
 
 def show_options(snapshot, screen_surface):
-    """Top-level Options UI. Operates on provided surface and returns:
-       ("resolution_changed", (w,h)) or ("resume", None).
-    """
+    """Top-level Options UI. Operates on provided surface and returns ("resume", None)."""
     sw, sh = screen_surface.get_size()
     # build blurred background from snapshot if provided
     if snapshot:
@@ -95,13 +93,15 @@ def show_options(snapshot, screen_surface):
     apply_font = get_font(15)
 
     vol = pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0
-    RES_OPTIONS = [(1280,720), (1366,768), (1600,900), (1920,1080), (800,600)]
-    # default to current surface size if it matches one of the RES_OPTIONS,
-    # otherwise fall back to 1920x1080
-    current_size = (sw, sh)
-    selected_res = current_size if current_size in RES_OPTIONS else (1920, 1080)
 
-    slider_rect = pygame.Rect(sw//2 - 200, sh//2 - 40, 400, 8)
+    # Precompute panel & apply/back rects so event handling can reference them
+    panel_w, panel_h = 700, 300
+    panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+    apply_r = pygame.Rect(panel.right-200, panel.bottom-60, 80, 36)
+    back_r = pygame.Rect(panel.right-100, panel.bottom-60, 80, 36)
+
+    # place slider relative to the panel so spacing is consistent; make it full-width-ish inside panel
+    slider_rect = pygame.Rect(panel.left + 40, panel.top + 140, panel.width - 80, 8)
     handle_w = 14
     dragging = False
     clock_local = pygame.time.Clock()
@@ -117,14 +117,15 @@ def show_options(snapshot, screen_surface):
                 mx,my = ev.pos
                 if slider_rect.collidepoint((mx,my)):
                     dragging = True
-                for i, r in enumerate(RES_OPTIONS):
-                    bx = sw//2 - 220 + i*110
-                    by = sh//2 + 40
-                    br = pygame.Rect(bx, by, 100, 32)
-                    if br.collidepoint((mx,my)):
-                        selected_res = r
             if ev.type == pygame.MOUSEBUTTONUP:
+                # stop dragging and treat a release as a click for Apply/Back
                 dragging = False
+                mx, my = ev.pos
+                if apply_r.collidepoint((mx, my)):
+                    # no resolution changes; just close options (volume already set live)
+                    return ("resume", None)
+                if back_r.collidepoint((mx, my)):
+                    return ("resume", None)
             if ev.type == pygame.MOUSEMOTION and dragging:
                 mx, my = ev.pos
                 t = (mx - slider_rect.left) / slider_rect.width
@@ -141,50 +142,29 @@ def show_options(snapshot, screen_surface):
         overlay.fill((0,0,0,120))
         screen_surface.blit(overlay, (0,0))
 
-        panel_w, panel_h = 700, 300
-        panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
         pygame.draw.rect(screen_surface, (40,40,40), panel)
         pygame.draw.rect(screen_surface, (120,120,120), panel, 4)
 
+        # move title a bit lower to add spacing from the top box line
         t_s = title_font_local.render("Options", True, (200,200,200))
-        screen_surface.blit(t_s, t_s.get_rect(center=(sw//2, panel.top+36)))
+        screen_surface.blit(t_s, t_s.get_rect(center=(sw//2, panel.top+48)))
 
+        # audio label placed above the slider with more vertical spacing
         lbl = button_font_local.render("Audio Volume", True, (220,220,220))
-        screen_surface.blit(lbl, (panel.left+40, panel.top+80))
+        screen_surface.blit(lbl, (panel.left+40, panel.top+110))
+
+        # draw slider using panel-relative rect
         pygame.draw.rect(screen_surface, (80,80,80), slider_rect)
         handle_x = slider_rect.left + int(vol * slider_rect.width)
         handle_rect = pygame.Rect(handle_x - handle_w//2, slider_rect.top - 6, handle_w, 20)
         pygame.draw.rect(screen_surface, (200,200,200), handle_rect)
 
-        lbl2 = button_font_local.render("Resolution", True, (220,220,220))
-        screen_surface.blit(lbl2, (panel.left+40, panel.top+140))
-        for i, r in enumerate(RES_OPTIONS):
-            bx = sw//2 - 220 + i*110
-            by = sh//2 + 40
-            br = pygame.Rect(bx, by, 100, 32)
-            pygame.draw.rect(screen_surface, (90,90,90), br)
-            if selected_res == r:
-                pygame.draw.rect(screen_surface, (0,160,0), br, 3)
-            txt = res_font.render(f"{r[0]}x{r[1]}", True, (0,0,0))
-            screen_surface.blit(txt, txt.get_rect(center=br.center))
-
-        apply_r = pygame.Rect(panel.right-200, panel.bottom-60, 80, 36)
-        back_r = pygame.Rect(panel.right-100, panel.bottom-60, 80, 36)
         pygame.draw.rect(screen_surface, (180,180,180), apply_r)
         pygame.draw.rect(screen_surface, (180,180,180), back_r)
         a_surf = apply_font.render("Apply", True, (0,0,0))
         b_surf = apply_font.render("Back", True, (0,0,0))
         screen_surface.blit(a_surf, a_surf.get_rect(center=apply_r.center))
         screen_surface.blit(b_surf, b_surf.get_rect(center=back_r.center))
-
-        mx,my = pygame.mouse.get_pos()
-        pressed = pygame.mouse.get_pressed()
-        if pressed[0]:
-            if apply_r.collidepoint((mx,my)):
-                if selected_res:
-                    return ("resolution_changed", selected_res)
-            if back_r.collidepoint((mx,my)):
-                return ("resume", None)
 
         pygame.display.update()
         clock_local.tick(60)
@@ -264,6 +244,703 @@ def show_pause_overlay(snapshot, screen_surface):
         pygame.display.update()
         clock_local.tick(60)
 
+def show_shop(snapshot, screen_surface):
+    """Simple shop UI: two horizontally-scrollable rows (weapons, armor).
+    Uses `sprites/sword.png` as a placeholder for all items.
+    Returns when user closes the shop (Back/Quit to Menu).
+    """
+    sw, sh = screen_surface.get_size()
+    # build blurred background from snapshot if provided
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
+            blurred = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            blurred = load_background("Background", (sw, sh))
+    else:
+        blurred = load_background("Background", (sw, sh))
+
+    title_f = get_font(44)
+    item_f = get_font(18)
+    btn_f = get_font(20)
+    clock_local = pygame.time.Clock()
+
+    # per-item descriptions (unique for each item) - make available for resolver
+    weapons_desc = {
+        "Sword": "A sharp blade for close combat.",
+        "Hammer": "Delivers heavy blunt damage; great vs armored foes.",
+        "Axe": "Heavy hitter with slow speed.",
+        "Dagger": "Fast but weaker melee weapon.",
+        "Spear": "Long reach polearm, good for spacing."
+    }
+
+    # armors are materials (not specific pieces) — descriptions describe material properties
+    armors_desc = {
+        "Wood": "Light material, offers minimal protection.",
+        "Iron": "Reliable material with balanced protection.",
+        "Diamond": "Exceptional durability and high protection.",
+        "Gold": "Soft but flashy; low protection, high weight.",
+        "Leather": "Flexible and light; eases movement."
+    }
+
+    # items (placeholder names now include distinct types so each can have its own description)
+    weapons = ["Sword", "Hammer", "Axe", "Dagger", "Spear"]
+    armors = ["Wood", "Iron", "Diamond", "Gold", "Leather"]
+
+    # purchased / inventory state persists while shop is open (can be saved later)
+    weapons_purchased = set()
+    armors_purchased = set()
+
+    # small helper to resolve a textual description for an item name consistently
+    def resolve_desc(item_name: str) -> str:
+        # prefer exact mapping first
+        if item_name in weapons_desc:
+            return weapons_desc[item_name]
+        if item_name in armors_desc:
+            return armors_desc[item_name]
+        # try substring matches (e.g. "Sword 1" -> "Sword")
+        for k, v in weapons_desc.items():
+            if k and k in item_name:
+                return v
+        for k, v in armors_desc.items():
+            if k and k in item_name:
+                return v
+        # fallback heuristic (keeps preview/modal consistent)
+        if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name:
+            return "A sharp blade. Effective at close range."
+        if "Armor" in item_name or "Chestplate" in item_name or "Helmet" in item_name or "Shield" in item_name or "Boots" in item_name or "Greaves" in item_name:
+            return "Protective gear. Reduces incoming damage."
+        return "A reliable item."
+
+    # Modal item detail view (shows large image, description, Buy/Back)
+    def show_item_page(item_name: str, item_image: pygame.Surface):
+        sw2, sh2 = screen_surface.get_size()
+        # build blurred background from the current screen for the modal
+        try:
+            snap2 = screen_surface.copy()
+        except Exception:
+            snap2 = None
+        if snap2:
+            try:
+                small = pygame.transform.smoothscale(snap2, (max(1, sw2//12), max(1, sh2//12)))
+                bg = pygame.transform.smoothscale(small, (sw2, sh2))
+            except Exception:
+                bg = load_background("Background", (sw2, sh2))
+        else:
+            bg = load_background("Background", (sw2, sh2))
+
+        title_font = get_font(36)
+        body_font = get_font(18)
+        small_font = get_font(16)
+        # simple text wrapper for descriptions
+        def wrap_text(text: str, font: pygame.font.Font, max_w: int):
+            words = text.split()
+            if not words:
+                return []
+            lines = []
+            cur = words[0]
+            for w in words[1:]:
+                test = cur + " " + w
+                if font.size(test)[0] <= max_w:
+                    cur = test
+                else:
+                    lines.append(cur)
+                    cur = w
+            lines.append(cur)
+            return lines
+        panel_w, panel_h = min(800, sw2-160), min(520, sh2-160)
+        panel = pygame.Rect((sw2-panel_w)//2, (sh2-panel_h)//2, panel_w, panel_h)
+        buy_rect = pygame.Rect(panel.left + 40, panel.bottom - 80, 140, 48)
+        back_rect = pygame.Rect(panel.right - 180, panel.bottom - 80, 140, 48)
+        purchased = False
+        # start purchased state from persistent sets so page reflects prior buys
+        purchased = (item_name in weapons_purchased) or (item_name in armors_purchased)
+        clock_modal = pygame.time.Clock()
+        # choose description & price heuristically from name
+        price = 50 if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name else 35 if "Armor" in item_name or "Chestplate" in item_name else 20
+
+        # resolve description using helper (consistent with bottom preview)
+        desc = resolve_desc(item_name)
+
+        # fallback heuristic (matches bottom preview logic)
+        if not desc:
+            if "Sword" in item_name:
+                desc = "A sharp blade for close combat."
+            elif "Armor" in item_name:
+                desc = "Protective gear. Reduces incoming damage."
+            else:
+                desc = "A reliable item."
+ 
+        while True:
+            dtm = clock_modal.tick(60)
+            for ev2 in pygame.event.get():
+                if ev2.type == pygame.QUIT:
+                    return ("menu", None)
+                if ev2.type == pygame.KEYDOWN and ev2.key == pygame.K_ESCAPE:
+                    return ("back", None)
+                if ev2.type == pygame.MOUSEBUTTONDOWN and ev2.button == 1:
+                    mx2,my2 = ev2.pos
+                    if not purchased:
+                        if buy_rect.collidepoint((mx2,my2)):
+                            # mark as purchased — persist to outer shop state
+                            purchased = True
+                            if "Sword" in item_name:
+                                weapons_purchased.add(item_name)
+                            else:
+                                armors_purchased.add(item_name)
+                        elif back_rect.collidepoint((mx2,my2)):
+                            return ("back", None)
+                    else:
+                        # after purchase show Equip / Upgrade buttons (handled below) — clicks return action
+                        if equip_rect.collidepoint((mx2,my2)):
+                            # ensure equipped items are considered purchased as well
+                            if "Sword" in item_name:
+                                weapons_purchased.add(item_name)
+                            else:
+                                armors_purchased.add(item_name)
+                            return ("equip", item_name)
+                        if upgrade_rect.collidepoint((mx2,my2)):
+                            return ("upgrade", item_name)
+                        if back_rect.collidepoint((mx2,my2)):
+                            return ("back", None)
+
+            # draw modal
+            screen_surface.blit(bg, (0,0))
+            overlay = pygame.Surface((sw2, sh2), pygame.SRCALPHA)
+            overlay.fill((0,0,0,160))
+            screen_surface.blit(overlay, (0,0))
+
+            pygame.draw.rect(screen_surface, (28,28,28), panel)
+            pygame.draw.rect(screen_surface, (140,140,140), panel, 3)
+            title_s = title_font.render(item_name, True, (220,220,220))
+            screen_surface.blit(title_s, title_s.get_rect(topleft=(panel.left+24, panel.top+18)))
+
+            # large image area (center-left)
+            img_w = min(panel_w//2, 320)
+            img_h = img_w
+            try:
+                big_img = pygame.transform.smoothscale(item_image, (img_w, img_h))
+            except Exception:
+                big_img = pygame.Surface((img_w, img_h))
+                big_img.fill((100,100,100))
+            screen_surface.blit(big_img, (panel.left+24, panel.top+70))
+
+            # description text on the right
+            tx = panel.left + 24 + img_w + 20
+            ty = panel.top + 70
+            # wrap description to fit the right area
+            desc_area_w = panel.right - tx - 24
+            wrapped = wrap_text(desc, body_font, max(10, desc_area_w))
+            # limit how many lines fit in the area (leave space for price and buttons)
+            max_lines = max(1, (panel_h - 160) // (body_font.get_linesize() + 2))
+            for i, line in enumerate(wrapped[:max_lines]):
+                surf = body_font.render(line, True, (200,200,200))
+                screen_surface.blit(surf, (tx, ty + i * (body_font.get_linesize() + 2)))
+            # price line under wrapped description (or after them)
+            price_y = ty + (min(len(wrapped), max_lines)) * (body_font.get_linesize() + 2) + 8
+            p_surf = body_font.render(f"Price: {price} gold", True, (200,200,200))
+            screen_surface.blit(p_surf, (tx, price_y))
+
+            # buttons: show Buy + Back initially; after purchase show Equip + Upgrade + Back
+            if not purchased:
+                pygame.draw.rect(screen_surface, (200,200,200), buy_rect)
+                buy_color = (0,200,0) if buy_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+                screen_surface.blit(small_font.render("Buy", True, buy_color), small_font.render("Buy", True, buy_color).get_rect(center=buy_rect.center))
+            else:
+                # post-purchase actions: Equip and Upgrade
+                equip_rect = pygame.Rect(panel.left + 40, panel.bottom - 80, 140, 48)
+                upgrade_rect = pygame.Rect(panel.left + 200, panel.bottom - 80, 140, 48)
+                pygame.draw.rect(screen_surface, (200,200,200), equip_rect)
+                pygame.draw.rect(screen_surface, (200,200,200), upgrade_rect)
+                eq_col = (0,200,0) if equip_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+                up_col = (0,200,0) if upgrade_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+                screen_surface.blit(small_font.render("Equip", True, eq_col), small_font.render("Equip", True, eq_col).get_rect(center=equip_rect.center))
+                screen_surface.blit(small_font.render("Upgrade", True, up_col), small_font.render("Upgrade", True, up_col).get_rect(center=upgrade_rect.center))
+
+            # Back button (always present)
+            pygame.draw.rect(screen_surface, (200,200,200), back_rect)
+            back_color = (0,200,0) if back_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+            screen_surface.blit(small_font.render("Back", True, back_color), small_font.render("Back", True, back_color).get_rect(center=back_rect.center))
+
+            pygame.display.update()
+
+    # items (placeholders)
+    weapons = ["Sword", "Hammer", "Axe", "Dagger", "Spear"]
+    armors = ["Wood", "Iron", "Diamond", "Gold", "Leather"]
+    # per-item descriptions (unique for each item)
+    weapons_desc = {
+        "Sword": "A sharp blade for close combat.",
+        "Hammer": "Delivers heavy blunt damage; great vs armored foes.",
+        "Axe": "Heavy hitter with slow speed.",
+        "Dagger": "Fast but weaker melee weapon.",
+        "Spear": "Long reach polearm, good for spacing."
+    }
+
+    armors_desc = {
+        "Wood": "Light material, offers minimal protection.",
+        "Iron": "Reliable material with balanced protection.",
+        "Diamond": "Exceptional durability and high protection.",
+        "Gold": "Soft but flashy; low protection, high weight.",
+        "Leather": "Flexible and light; eases movement."
+    }
+    # purchased / inventory state persists while shop is open (can be saved later)
+    weapons_purchased = set()
+    armors_purchased = set()
+
+    # small helper to resolve a textual description for an item name consistently
+    def resolve_desc(item_name: str) -> str:
+        # prefer exact mapping first
+        if item_name in weapons_desc:
+            return weapons_desc[item_name]
+        if item_name in armors_desc:
+            return armors_desc[item_name]
+        # try substring matches (e.g. "Sword 1" -> "Sword")
+        for k, v in weapons_desc.items():
+            if k and k in item_name:
+                return v
+        for k, v in armors_desc.items():
+            if k and k in item_name:
+                return v
+        # fallback heuristic (keeps preview/modal consistent)
+        if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name:
+            return "A sharp blade. Effective at close range."
+        if "Armor" in item_name or "Chestplate" in item_name or "Helmet" in item_name or "Shield" in item_name or "Boots" in item_name or "Greaves" in item_name:
+            return "Protective gear. Reduces incoming damage."
+        return "A reliable item."
+
+    # load placeholder image
+    base = Path(__file__).parent
+    sword_img = None
+    try:
+        p = base.joinpath("sprites", "sword.png")
+        if p.exists():
+            sword_img = pygame.image.load(str(p)).convert_alpha()
+            sword_img = pygame.transform.smoothscale(sword_img, (96, 96))
+    except Exception:
+        sword_img = None
+    if sword_img is None:
+        sword_img = pygame.Surface((96, 96), pygame.SRCALPHA)
+        pygame.draw.polygon(sword_img, (200, 200, 200), [(8,88),(48,8),(88,88)])
+
+    # scrolling state (px offsets)
+    weapons_offset = 0
+    armors_offset = 0
+    # selection/focus state
+    weapons_selected = 0
+    armors_selected = 0
+    focused_row = "weapons"  # or "armors"
+    # equipped indices (None == nothing equipped)
+    weapons_equipped = None
+    armors_equipped = None
+    row_gap = 200
+    margin_x = 120
+    item_w = 120
+    spacing = 20
+
+    back_rect = pygame.Rect((sw//2 - 100, sh - 120, 200, 56))
+
+    # bigger arrows, centered vertically relative to item box
+    arrow_w = 64
+    arrow_h = 64
+
+    while True:
+        # reset click state each frame so old clicks don't persist
+        clicked_pos = None
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return ("menu", None)
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    return ("resume", None)
+                if ev.key == pygame.K_TAB:
+                    # toggle focused row
+                    focused_row = "armors" if focused_row == "weapons" else "weapons"
+                if ev.key == pygame.K_RIGHT:
+                    # move selection in focused row
+                    if focused_row == "weapons":
+                        weapons_selected = min(len(weapons)-1, weapons_selected+1)
+                    else:
+                        armors_selected = min(len(armors)-1, armors_selected+1)
+                if ev.key == pygame.K_LEFT:
+                    if focused_row == "weapons":
+                        weapons_selected = max(0, weapons_selected-1)
+                    else:
+                        armors_selected = max(0, armors_selected-1)
+            if ev.type == pygame.MOUSEBUTTONDOWN:
+                # only treat left-click as selection/click
+                if ev.button == 1:
+                    if back_rect.collidepoint(ev.pos):
+                        return ("resume", None)
+                    # record click position for later per-row handling
+                    clicked_pos = ev.pos
+                # allow horizontal scroll with wheel
+                if ev.button == 4:  # wheel up
+                    weapons_offset += 40
+                    armors_offset += 40
+                if ev.button == 5:  # wheel down
+                    weapons_offset -= 40
+                    armors_offset -= 40
+
+                # other buttons ignored for click selection
+
+        # clamp scrolling so user can't scroll too far
+        max_scroll = max(0, (len(weapons) * (item_w + spacing)) - (sw - margin_x*2))
+        weapons_offset = max(-max_scroll, min(0, weapons_offset))
+        armors_offset = max(-max_scroll, min(0, armors_offset))
+
+        screen_surface.blit(blurred, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,140))
+        screen_surface.blit(overlay, (0,0))
+
+        panel_w, panel_h = sw - 160, sh - 160
+        panel = pygame.Rect((80, 80, panel_w, panel_h))
+        pygame.draw.rect(screen_surface, (30,30,30), panel)
+        pygame.draw.rect(screen_surface, (120,120,120), panel, 3)
+
+        title_surf = title_f.render("Shop", True, (220,220,220))
+        screen_surface.blit(title_surf, title_surf.get_rect(center=(sw//2, panel.top + 36)))
+
+        # draw weapons row
+        # moved weapons row a bit down so it has breathing room
+        y_weapons = panel.top + 120
+        # compute available visible area and center rows when content is narrower
+        visible_left = panel.left + margin_x
+        visible_w = panel_w - margin_x*2
+        total_weapons_w = max(0, len(weapons) * (item_w + spacing) - spacing)
+        if total_weapons_w < visible_w:
+            x_start_weapons = panel.left + (panel_w - total_weapons_w) // 2
+        else:
+            x_start_weapons = panel.left + margin_x
+        # same for armors (computed later), default x_start for weapons usage below:
+        x_start = x_start_weapons
+
+        # center the "Weapons" label above the row
+        w_label = item_f.render("Weapons", True, (200,200,200))
+        screen_surface.blit(w_label, w_label.get_rect(center=(panel.left + panel_w//2, y_weapons - 22)))
+
+        # left/right arrow rects for weapons
+        # arrows: larger and vertically centered on the item boxes, slightly inset horizontally
+        w_left_rect = pygame.Rect(panel.left + 24, y_weapons + (item_w - arrow_h)//2, arrow_w, arrow_h)
+        w_right_rect = pygame.Rect(panel.right - 24 - arrow_w, y_weapons + (item_w - arrow_h)//2, arrow_w, arrow_h)
+        pygame.draw.rect(screen_surface, (80,80,80), w_left_rect)
+        pygame.draw.rect(screen_surface, (80,80,80), w_right_rect)
+        screen_surface.blit(item_f.render("<", True, (220,220,220)), (w_left_rect.left+12, w_left_rect.top+6))
+        screen_surface.blit(item_f.render(">", True, (220,220,220)), (w_right_rect.left+12, w_right_rect.top+6))
+
+        for i, name in enumerate(weapons):
+            x = x_start_weapons + i * (item_w + spacing) + weapons_offset
+            item_rect = pygame.Rect(x, y_weapons, item_w, 120)
+             # only draw if visible
+            if item_rect.right >= panel.left + 10 and item_rect.left <= panel.right - 10:
+                pygame.draw.rect(screen_surface, (50,50,50), item_rect)
+                screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
+                nm = item_f.render(name, True, (220,220,220))
+                nm_rect = nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 6))  # draw name below box
+                screen_surface.blit(nm, nm_rect)
+
+             # outline equipped (green) always; outline focused selection (gold) only when row focused
+            if weapons_equipped == i:
+                pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
+            elif i == weapons_selected and focused_row == "weapons":
+                pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
+
+        # handle clicks on weapon arrows/items
+        if clicked_pos:
+            mx,my = clicked_pos
+            if w_left_rect.collidepoint((mx,my)):
+                weapons_selected = max(0, weapons_selected-1)
+                focused_row = "weapons"
+            elif w_right_rect.collidepoint((mx,my)):
+                weapons_selected = min(len(weapons)-1, weapons_selected+1)
+                focused_row = "weapons"
+            else:
+                # item clicks
+                for i in range(len(weapons)):
+                    x = x_start_weapons + i * (item_w + spacing) + weapons_offset
+                    item_rect = pygame.Rect(x, y_weapons, item_w, 120)
+                    if item_rect.collidepoint((mx,my)):
+                        weapons_selected = i
+                        focused_row = "weapons"
+                        # open item detail page
+                        try:
+                            res = show_item_page(weapons[i], sword_img)
+                            # persist purchase/equip if requested
+                            if res and res[0] == "equip":
+                                weapons_purchased.add(res[1])
+                                try:
+                                    idx = weapons.index(res[1])
+                                    weapons_equipped = idx
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        break
+
+        # draw armors row
+        y_armors = y_weapons + row_gap
+        # center the "Armor" label above the armor row
+        a_label = item_f.render("Armors", True, (200,200,200))
+        # slightly lower the label so there's clearer space from the weapons row
+        screen_surface.blit(a_label, a_label.get_rect(center=(panel.left + panel_w//2, y_armors - 20)))
+
+        # left/right arrow rects for armors
+        # armor arrows also centered vertically relative to armor box
+        a_left_rect = pygame.Rect(panel.left + 24, y_armors + (item_w - arrow_h)//2, arrow_w, arrow_h)
+        a_right_rect = pygame.Rect(panel.right - 24 - arrow_w, y_armors + (item_w - arrow_h)//2, arrow_w, arrow_h)
+        pygame.draw.rect(screen_surface, (80,80,80), a_left_rect)
+        pygame.draw.rect(screen_surface, (80,80,80), a_right_rect)
+        screen_surface.blit(item_f.render("<", True, (220,220,220)), (a_left_rect.left+12, a_left_rect.top+6))
+        screen_surface.blit(item_f.render(">", True, (220,220,220)), (a_right_rect.left+12, a_right_rect.top+6))
+
+        # compute armors x_start (center when narrow)
+        total_armors_w = max(0, len(armors) * (item_w + spacing) - spacing)
+        if total_armors_w < visible_w:
+            x_start_armors = panel.left + (panel_w - total_armors_w) // 2
+        else:
+            x_start_armors = panel.left + margin_x
+
+        for i, name in enumerate(armors):
+            x = x_start_armors + i * (item_w + spacing) + armors_offset
+            item_rect = pygame.Rect(x, y_armors, item_w, 120)
+            if item_rect.right >= panel.left + 10 and item_rect.left <= panel.right - 10:
+                pygame.draw.rect(screen_surface, (50,50,50), item_rect)
+                screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
+                nm = item_f.render(name, True, (220,220,220))
+                nm_rect = nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 6))
+                screen_surface.blit(nm, nm_rect)
+
+            # outline equipped (green) always; outline focused selection (gold) only when focused
+            if armors_equipped == i:
+                pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
+            elif i == armors_selected and focused_row == "armors":
+                pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
+
+        # handle clicks on armor arrows/items
+        if clicked_pos:
+            mx,my = clicked_pos
+            if a_left_rect.collidepoint((mx,my)):
+                armors_selected = max(0, armors_selected-1)
+                focused_row = "armors"
+            elif a_right_rect.collidepoint((mx,my)):
+                armors_selected = min(len(armors)-1, armors_selected+1)
+                focused_row = "armors"
+            else:
+                for i in range(len(armors)):
+                    x = x_start_armors + i * (item_w + spacing) + armors_offset
+                    item_rect = pygame.Rect(x, y_armors, item_w, 120)
+                    if item_rect.collidepoint((mx,my)):
+                        armors_selected = i
+                        focused_row = "armors"
+                        # open item detail page (armor uses same placeholder image)
+                        try:
+                            res = show_item_page(armors[i], sword_img)
+                            if res and res[0] == "equip":
+                                armors_purchased.add(res[1])
+                                try:
+                                    idx = armors.index(res[1])
+                                    armors_equipped = idx
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        clicked_pos = None
+                        break
+
+        # center offsets on selection so focused selected item is visible
+        # compute desired offsets to center selected item
+        visible_left = panel.left + margin_x
+        visible_w = panel_w - margin_x*2
+        if focused_row == "weapons":
+            targ_x = x_start_weapons + weapons_selected * (item_w + spacing)
+            desired = visible_left + (visible_w - item_w)//2
+            weapons_offset = desired - targ_x
+        else:
+            targ_x = x_start_armors + armors_selected * (item_w + spacing)
+            desired = visible_left + (visible_w - item_w)//2
+            armors_offset = desired - targ_x
+
+        # clamp again after centering using per-row scroll limits
+        max_scroll_weapons = max(0, total_weapons_w - visible_w)
+        max_scroll_armors = max(0, total_armors_w - visible_w)
+        weapons_offset = max(-max_scroll_weapons, min(0, weapons_offset))
+        armors_offset = max(-max_scroll_armors, min(0, armors_offset))
+
+        # Description preview box at the bottom of the panel for the highlighted item.
+        # Place it above the Back button to avoid overlap.
+        desc_panel_h = 72
+        desc_panel_top = max(panel.top + 120, back_rect.top - 12 - desc_panel_h)
+        desc_panel = pygame.Rect(panel.left + 20, desc_panel_top, panel_w - 40, desc_panel_h)
+        pygame.draw.rect(screen_surface, (24,24,24), desc_panel)
+        pygame.draw.rect(screen_surface, (100,100,100), desc_panel, 2)
+        # determine highlighted item (by focused_row)
+        if focused_row == "weapons":
+            cur_name = weapons[weapons_selected] if 0 <= weapons_selected < len(weapons) else ""
+        else:
+            cur_name = armors[armors_selected] if 0 <= armors_selected < len(armors) else ""
+        # use same resolver as modal so preview and modal match
+        cur_desc = resolve_desc(cur_name)
+        # render wrapped description inside desc_panel with spacing between name and description
+        wrap_font = get_font(16)
+        def wrap_text_local(text: str, font: pygame.font.Font, max_w: int):
+            words = text.split()
+            if not words:
+                return []
+            lines = []
+            cur = words[0]
+            for w in words[1:]:
+                test = cur + " " + w
+                if font.size(test)[0] <= max_w:
+                    cur = test
+                else:
+                    lines.append(cur)
+                    cur = w
+            lines.append(cur)
+            return lines
+        pad = 10
+        # draw item name first (top of desc panel)
+        name_font = get_font(18)
+        name_s = name_font.render(cur_name, True, (200,200,120))
+        screen_surface.blit(name_s, (desc_panel.left + pad, desc_panel.top + 6))
+        # compute description start below the name with extra spacing
+        desc_start_y = desc_panel.top + 6 + name_font.get_linesize() + 6
+        max_w = desc_panel.width - pad*2
+        lines = wrap_text_local(cur_desc, wrap_font, max_w)
+        for i, ln in enumerate(lines[:3]):  # limit to 3 lines
+            surf = wrap_font.render(ln, True, (210,210,210))
+            screen_surface.blit(surf, (desc_panel.left + pad, desc_start_y + i * (wrap_font.get_linesize() + 2)))
+
+        # back button
+        pygame.draw.rect(screen_surface, (200,200,200), back_rect)
+        back_color = (0,200,0) if back_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+        screen_surface.blit(btn_f.render("Back", True, back_color), btn_f.render("Back", True, back_color).get_rect(center=back_rect.center))
+
+        pygame.display.update()
+        clock_local.tick(60)
+
+def show_difficulty(snapshot, screen_surface):
+    """Modal to pick difficulty. Returns 'easy'|'normal'|'hard' or None if cancelled."""
+    sw, sh = screen_surface.get_size()
+    # make blurred background from snapshot if provided
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
+            bg = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            bg = load_background("Background", (sw, sh))
+    else:
+        bg = load_background("Background", (sw, sh))
+
+    title_f = get_font(44)
+    desc_f = get_font(18)
+    clock_local = pygame.time.Clock()
+
+    # adaptive panel size so things fit on small screens
+    panel_w = min(900, max(520, sw - 160))
+    panel_h = min(420, max(280, int(sh * 0.36)))
+    panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+
+    # horizontal layout for three options
+    padding_x = 36
+    padding_y = 48
+    inner_w = panel_w - padding_x*2
+    spacing = 20
+    btn_w = int((inner_w - spacing*2) / 3)
+    btn_h = 64
+    btn_y = panel.top + padding_y + 40
+
+    left_x = panel.left + padding_x
+    easy_r = pygame.Rect(left_x, btn_y, btn_w, btn_h)
+    normal_r = pygame.Rect(left_x + (btn_w + spacing) * 1, btn_y, btn_w, btn_h)
+    hard_r = pygame.Rect(left_x + (btn_w + spacing) * 2, btn_y, btn_w, btn_h)
+
+    # desired presentation: show heart icons and show XP multiplier as gold under hearts
+    diff_hearts = {"easy": 4, "normal": 3, "hard": 1}
+    diff_xp = {"easy": 0.75, "normal": 1.0, "hard": 2.0}
+    # try to load heart sprite (fallback to a drawn square if missing)
+    heart_img = None
+    try:
+        base = Path(__file__).parent
+        p = base.joinpath("sprites", "heart_1.png")
+        if p.exists():
+            heart_img = pygame.image.load(str(p)).convert_alpha()
+            heart_img = pygame.transform.smoothscale(heart_img, (28, 28))
+    except Exception:
+        heart_img = None
+    if heart_img is None:
+        heart_img = pygame.Surface((28, 28), pygame.SRCALPHA)
+        pygame.draw.polygon(heart_img, (200,50,50), [(14,4),(26,12),(14,26),(2,12)])
+
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    return None
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx, my = ev.pos
+                if easy_r.collidepoint((mx, my)):
+                    return "easy"
+                if normal_r.collidepoint((mx, my)):
+                    return "normal"
+                if hard_r.collidepoint((mx, my)):
+                    return "hard"
+
+        # draw
+        screen_surface.blit(bg, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,160))
+        screen_surface.blit(overlay, (0,0))
+
+        pygame.draw.rect(screen_surface, (28,28,28), panel)
+        pygame.draw.rect(screen_surface, (140,140,140), panel, 3)
+        title_s = title_f.render("Choose Difficulty", True, (220,220,220))
+        screen_surface.blit(title_s, title_s.get_rect(center=(sw//2, panel.top + 34)))
+
+        # draw buttons
+        pygame.draw.rect(screen_surface, (200,200,200), easy_r)
+        pygame.draw.rect(screen_surface, (200,200,200), normal_r)
+        pygame.draw.rect(screen_surface, (200,200,200), hard_r)
+
+        mouse = pygame.mouse.get_pos()
+        e_col = (0,200,0) if easy_r.collidepoint(mouse) else (0,0,0)
+        n_col = (0,200,0) if normal_r.collidepoint(mouse) else (0,0,0)
+        h_col = (0,200,0) if hard_r.collidepoint(mouse) else (0,0,0)
+
+        screen_surface.blit(desc_f.render("Easy", True, e_col), desc_f.render("Easy", True, e_col).get_rect(center=easy_r.center))
+        screen_surface.blit(desc_f.render("Normal", True, n_col), desc_f.render("Normal", True, n_col).get_rect(center=normal_r.center))
+        screen_surface.blit(desc_f.render("Hard", True, h_col), desc_f.render("Hard", True, h_col).get_rect(center=hard_r.center))
+
+        # render heart icons (centered) and XP multiplier under hearts (gold color)
+        def draw_hearts_and_xp(centerx, count, xp_val):
+            # hearts row
+            spacing_h = 6
+            total_w = count * heart_img.get_width() + max(0, count-1) * spacing_h
+            start_x = int(centerx - total_w / 2)
+            y_hearts = btn_y + btn_h + 8
+            for i in range(count):
+                hx = start_x + i * (heart_img.get_width() + spacing_h)
+                screen_surface.blit(heart_img, (hx, y_hearts))
+            # xp text under hearts (gold)
+            gold = (212, 175, 55)
+            xp_font = get_font(16)
+            xp_s = xp_font.render(f"{xp_val:.2f}x XP", True, gold)
+            screen_surface.blit(xp_s, xp_s.get_rect(center=(centerx, y_hearts + heart_img.get_height() + 14)))
+
+        draw_hearts_and_xp(easy_r.centerx, diff_hearts["easy"], diff_xp["easy"])
+        draw_hearts_and_xp(normal_r.centerx, diff_hearts["normal"], diff_xp["normal"])
+        draw_hearts_and_xp(hard_r.centerx, diff_hearts["hard"], diff_xp["hard"])
+
+        # hint line at bottom
+        hint_f = get_font(14)
+        hint_s = hint_f.render("Press Esc to cancel", True, (160,160,160))
+        screen_surface.blit(hint_s, hint_s.get_rect(center=(sw//2, panel.bottom - 22)))
+
+        pygame.display.update()
+        clock_local.tick(60)
+
 def run_menu():
     global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen
     clock = pygame.time.Clock()
@@ -306,38 +983,60 @@ def run_menu():
                 pygame.quit()
                 sys.exit()
 
-            # toggle fullscreen/windowed with F11
+            # toggle fullscreen/windowed with F11 (ensure we recreate assets after change)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                 is_fullscreen = not is_fullscreen
-                if is_fullscreen:
+                try:
                     info = pygame.display.Info()
-                    SCREEN = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
-                else:
-                    SCREEN = pygame.display.set_mode((1280, 720))
+                    if is_fullscreen:
+                        SCREEN = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+                    else:
+                        SCREEN = pygame.display.set_mode((1280, 720))
+                except Exception:
+                    # fallback: try toggle_fullscreen then recreate assets
+                    try:
+                        pygame.display.toggle_fullscreen()
+                    except Exception:
+                        pass
                 # after mode change recreate background and buttons
                 SCREEN_W, SCREEN_H = SCREEN.get_size()
                 create_assets()
 
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if buttons[0].is_clicked(mouse_pos):
-                    # import main lazily to avoid circular import at module load time
-                    import main
-                    main.run_game(SCREEN)
-                elif buttons[1].is_clicked(mouse_pos):
-                    # Placeholder: Shop screen
-                    pass
-                elif buttons[2].is_clicked(mouse_pos):
-                    # Placeholder: Options screen
-                    # allow opening options directly without snapshot
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                # use the click position from the event (avoid stale mouse_pos issues)
+                mx, my = event.pos
+                if buttons[0].is_clicked((mx, my)):
+                    # Show difficulty chooser before starting game
+                    try:
+                        snap = SCREEN.copy()
+                    except Exception:
+                        snap = None
+                    chosen = show_difficulty(snap, SCREEN)
+                    if chosen is None:
+                        # cancelled
+                        pass
+                    else:
+                        import main
+                        # pass chosen difficulty into the game
+                        main.run_game(SCREEN, difficulty=chosen)
+                    create_assets()
+                elif buttons[1].is_clicked((mx, my)):
+                    try:
+                        snap = SCREEN.copy()
+                    except Exception:
+                        snap = None
+                    res = show_shop(snap, SCREEN)
+                    if res and res[0] == "menu":
+                        return
+                elif buttons[2].is_clicked((mx, my)):
                     opt_res = run_options(background)
-                    if opt_res[0] == "resolution_changed":
+                    if opt_res and opt_res[0] == "resolution_changed":
                         new_size = opt_res[1]
                         is_fullscreen = False
                         SCREEN = pygame.display.set_mode(new_size)
                         SCREEN_W, SCREEN_H = SCREEN.get_size()
                         create_assets()
-                    pass
-                elif buttons[3].is_clicked(mouse_pos):
+                elif buttons[3].is_clicked((mx, my)):
                     pygame.quit()
                     sys.exit()
 
@@ -357,12 +1056,4 @@ def run_menu():
             btn.draw(SCREEN)
 
         pygame.display.update()
-        clock.tick(60)
-        clock.tick(60)
-        for btn in buttons:
-            btn.update(mouse_pos)
-            btn.draw(SCREEN)
-
-        pygame.display.update()
-        clock.tick(60)
-        clock.tick(60)
+        clock.tick(60)   # limit to 60 FPS
