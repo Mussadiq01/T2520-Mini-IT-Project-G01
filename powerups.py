@@ -25,8 +25,39 @@ def _get_font(size):
                 break
     return pygame.font.SysFont("arial", size, bold=True)
 
+# helper: wrap text into up to `max_lines` lines and return a surface
+def _wrap_render(font, text, color, max_width, max_lines=2, line_spacing=2):
+    words = text.split()
+    lines = []
+    cur = ""
+    for w in words:
+        test = w if cur == "" else cur + " " + w
+        if font.size(test)[0] <= max_width:
+            cur = test
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+        if len(lines) >= max_lines:
+            break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+
+    surfaces = [font.render(line, True, color) for line in lines]
+    if not surfaces:
+        return pygame.Surface((0, 0), pygame.SRCALPHA)
+    width = max(s.get_width() for s in surfaces)
+    height = sum(s.get_height() for s in surfaces) + (len(surfaces) - 1) * line_spacing
+    surf = pygame.Surface((width, height), pygame.SRCALPHA)
+    surf.fill((0, 0, 0, 0))
+    y = 0
+    for s in surfaces:
+        surf.blit(s, ((width - s.get_width()) // 2, y))
+        y += s.get_height() + line_spacing
+    return surf
+
 def choose_powerup(snapshot, screen_surface):
-    """Display 3 cards (all damage cards for now). Returns (pick_dict_or_None, elapsed_ms)."""
+    """Display 3 cards (damage/attackspeed/dashspeed/speed). Returns (pick_dict_or_None, elapsed_ms)."""
     sw, sh = screen_surface.get_size()
 
     # --- load UI backdrop and fonts first (per request) ---
@@ -74,16 +105,61 @@ def choose_powerup(snapshot, screen_surface):
         card_img.fill((80, 80, 80))
         pygame.draw.rect(card_img, (200, 200, 200), card_img.get_rect(), 3)
 
-    # layout using the card's native size; move the cards down a bit (+40 px)
+    # load specific images for each powerup (fallback to generic card_img)
+    card_images = {}
+    keys_and_files = {
+        "damage": "damage_card.png",
+        "attackspeed": "attackspeed_card.png",
+        "dashspeed": "dashspeed_card.png",
+        "speed": "speed_card.png",
+    }
+    for key, fname in keys_and_files.items():
+        fp = base.joinpath("sprites", fname)
+        if fp.exists():
+            try:
+                im = pygame.image.load(str(fp)).convert_alpha()
+                # scale to the chosen card base size for consistent layout
+                im = pygame.transform.smoothscale(im, (card_img.get_width(), card_img.get_height()))
+                card_images[key] = im
+            except Exception:
+                card_images[key] = card_img
+        else:
+            card_images[key] = card_img
+
+    # define candidate powerups
+    pool = [
+        {"id": "damage", "type": "damage", "amount": 5, "label": "+5 Damage"},
+        {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Speed"},
+        {"id": "dashspeed", "type": "dashspeed", "amount": 0.20, "label": "+20% Dash Recovery"},
+        {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"}
+    ]
+
+    # randomly pick three distinct cards to show
+    choices = random.sample(pool, 3)
+
+    # layout using the card's native size; increase vertical offset to avoid label overlap
     card_w, card_h = card_img.get_width(), card_img.get_height()
     gap = 40
     total_w = card_w * 3 + gap * 2
     start_x = (sw - total_w) // 2
-    y = (sh - card_h) // 2 + 40    # moved down by 40 pixels
+    # move cards further down so labels and title have breathing room
+    y = (sh - card_h) // 2 + 10    # increased from +40 to +80
     cards = [pygame.Rect(start_x + i * (card_w + gap), y, card_w, card_h) for i in range(3)]
 
-    # now we know title position
-    title_rect = title_surf.get_rect(center=(sw // 2, y - 48))
+    # now we know title position; move it up relative to the cards to avoid overlap
+    title_rect = title_surf.get_rect(center=(sw // 2, y - 35))
+
+    # compute a safe hover scale so an enlarged card won't overlap adjacent slots
+    slot_width = card_w + gap
+    # ensure at least 1.0; slightly reduce to keep margin
+    safe_scale = min(1.18, max(1.0, (slot_width - 8) / float(card_w) * 0.92))
+    hover_scale = safe_scale
+    label_margin_hover = 30
+    label_margin_normal = 22
+
+    # label colors (normal / hovered) - green shades
+    label_color_normal = (80, 200, 120)
+    label_color_hover = (120, 240, 140)
 
     # main event/draw loop (single, consistent loop)
     while True:
@@ -91,7 +167,7 @@ def choose_powerup(snapshot, screen_surface):
             # Do NOT allow skip; QUIT picks a random card
             if ev.type == pygame.QUIT:
                 i = random.randint(0, 2)
-                pick = {"id": f"damage_{random.randint(1000,9999)}", "type": "damage", "amount": 5}
+                pick = choices[i]
                 elapsed = pygame.time.get_ticks() - start_ticks
                 return pick, elapsed
             if ev.type == pygame.KEYDOWN:
@@ -101,7 +177,7 @@ def choose_powerup(snapshot, screen_surface):
                 mx, my = ev.pos
                 for i, r in enumerate(cards):
                     if r.collidepoint((mx, my)):
-                        pick = {"id": f"damage_{random.randint(1000,9999)}", "type": "damage", "amount": 5}
+                        pick = choices[i]
                         elapsed = pygame.time.get_ticks() - start_ticks
                         return pick, elapsed
 
@@ -109,48 +185,93 @@ def choose_powerup(snapshot, screen_surface):
         screen_surface.blit(bg, (0, 0))
         screen_surface.blit(overlay, (0, 0))
         # title (no panel behind per previous request) placed above the moved-down cards
+        # ensure title does not overlap the top of the screen; reduced offset to bring title closer
+        title_y = max(12, y - card_h // 2 - 20)
+        title_rect = title_surf.get_rect(center=(sw // 2, title_y))
         screen_surface.blit(title_surf, title_rect)
 
         mx, my = pygame.mouse.get_pos()
         for i, r in enumerate(cards):
             hovered = r.collidepoint((mx, my))
 
+            # select the proper image for this choice
+            choice_id = choices[i].get("id", "damage")
+            img_src = card_images.get(choice_id, card_img)
+
             if hovered:
-                # enlarge hovered card (scale up) and draw centered on original rect
-                scale = 1.18
+                # enlarge hovered card (scale up) but respect safe hover_scale
+                scale = hover_scale
                 swidth = int(card_w * scale)
                 sheight = int(card_h * scale)
                 try:
-                    img = pygame.transform.smoothscale(card_img, (swidth, sheight))
+                    img = pygame.transform.smoothscale(img_src, (swidth, sheight))
                 except Exception:
-                    img = card_img
+                    img = img_src
                 rect = img.get_rect(center=r.center)
 
-                # small black backing (previous behavior) and thin outline
-                pygame.draw.rect(screen_surface, (0, 0, 0), rect.inflate(6, 6))
+                # clamp horizontally so it doesn't draw off-screen
+                if rect.left < 8:
+                    rect.left = 8
+                if rect.right > sw - 8:
+                    rect.right = sw - 8
+
+                # backing for the card (slightly transparent black) to improve readability
+                try:
+                    back = pygame.Surface((rect.width + 8, rect.height + 8), pygame.SRCALPHA)
+                    back.fill((0, 0, 0, 160))
+                    screen_surface.blit(back, (rect.left - 4, rect.top - 4))
+                except Exception:
+                    pygame.draw.rect(screen_surface, (0, 0, 0), rect.inflate(6, 6))
+
                 screen_surface.blit(img, rect.topleft)
                 try:
                     pygame.draw.rect(screen_surface, (0, 0, 0), rect, 2)
                 except Exception:
-                    pygame.draw.rect(screen_surface, (0, 0, 0), rect.inflate(6,6))
+                    pass
 
-                # label positioned relative to the enlarged rect
-                lbl = info_f.render("+5 Damage", True, (220, 200, 80))
-                screen_surface.blit(lbl, lbl.get_rect(center=(rect.centerx, rect.bottom + 18)))
+                # label with semi-transparent background below the scaled rect (wrapped, up to 2 lines)
+                max_label_w = max(80, min(swidth - 16, sw - 40))
+                lbl_surf = _wrap_render(info_f, choices[i].get("label", ""), label_color_hover, max_label_w)
+                lbl_rect = lbl_surf.get_rect(center=(rect.centerx, rect.bottom + label_margin_hover))
+                 # clamp label to screen bottom
+                if lbl_rect.bottom > sh - 8:
+                    lbl_rect.bottom = sh - 8
+                bg_rect = lbl_rect.inflate(10, 6)
+                try:
+                    s_bg = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+                    s_bg.fill((0, 0, 0, 160))
+                    screen_surface.blit(s_bg, bg_rect.topleft)
+                except Exception:
+                    pygame.draw.rect(screen_surface, (0,0,0), bg_rect)
+                screen_surface.blit(lbl_surf, lbl_rect)
             else:
                 # draw card at native size centered in slot, with small black backing and thin outline
-                rect = card_img.get_rect(center=r.center)
-                pygame.draw.rect(screen_surface, (0, 0, 0), rect.inflate(6, 6))
-                screen_surface.blit(card_img, rect.topleft)
+                rect = img_src.get_rect(center=r.center)
+                try:
+                    back = pygame.Surface((rect.width + 6, rect.height + 6), pygame.SRCALPHA)
+                    back.fill((0, 0, 0, 160))
+                    screen_surface.blit(back, (rect.left - 3, rect.top - 3))
+                except Exception:
+                    pygame.draw.rect(screen_surface, (0, 0, 0), rect.inflate(6, 6))
+                screen_surface.blit(img_src, rect.topleft)
                 try:
                     pygame.draw.rect(screen_surface, (0, 0, 0), rect, 2)
                 except Exception:
-                    pygame.draw.rect(screen_surface, (0, 0, 0), rect.inflate(6, 6))
+                    pass
 
-                lbl = info_f.render("+5 Damage", True, (200, 200, 200))
-                screen_surface.blit(lbl, lbl.get_rect(center=(rect.centerx, rect.bottom + 18)))
+                max_label_w = max(80, card_w - 16)
+                lbl_surf = _wrap_render(info_f, choices[i].get("label", ""), label_color_normal, max_label_w)
+                lbl_rect = lbl_surf.get_rect(center=(rect.centerx, rect.bottom + label_margin_normal))
+                if lbl_rect.bottom > sh - 8:
+                    lbl_rect.bottom = sh - 8
+                bg_rect = lbl_rect.inflate(8, 6)
+                try:
+                    s_bg = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+                    s_bg.fill((0, 0, 0, 140))
+                    screen_surface.blit(s_bg, bg_rect.topleft)
+                except Exception:
+                    pygame.draw.rect(screen_surface, (0,0,0), bg_rect)
+                screen_surface.blit(lbl_surf, lbl_rect)
 
-        pygame.display.update()
-        clock.tick(60)
         pygame.display.update()
         clock.tick(60)
