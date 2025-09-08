@@ -281,8 +281,35 @@ def run_game(screen=None, difficulty: str = "normal"):
     try:
         pick, elapsed_ms = powerups.choose_powerup(snap, win)
         chooser_elapsed_pending = int(elapsed_ms or 0)
-        if pick and pick.get("type") == "damage":
-            sword_damage += int(pick.get("amount", 0))
+        # apply powerup effects
+        if pick:
+            ptype = str(pick.get("type", "")).lower()
+            if ptype == "damage":
+                sword_damage += int(pick.get("amount", 0))
+            elif ptype == "attackspeed":
+                try:
+                    amt = float(pick.get("amount", 0.2))
+                    # reduce attack cooldown by percentage (e.g. 0.2 -> 20%)
+                    attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                except Exception:
+                    pass
+            elif ptype == "dashspeed":
+                try:
+                    amt = float(pick.get("amount", 0.2))
+                    # reduce dash cooldown (time to recover stamina) by `amt` percent.
+                    # stamina_regen_rate is in units per second; to shorten time by amt, multiply by 1/(1-amt).
+                    if stamina_regen_rate > 0:
+                        stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
+                except Exception:
+                    pass
+            elif ptype == "speed":
+                try:
+                    walk_mult = float(pick.get("walk_mult", 0.25))
+                    dash_mult = float(pick.get("dash_mult", 0.20))
+                    vel = vel * (1.0 + walk_mult)
+                    dash_speed = dash_speed * (1.0 + dash_mult)
+                except Exception:
+                    pass
     except Exception:
         chooser_elapsed_pending = 0
 
@@ -519,8 +546,32 @@ def run_game(screen=None, difficulty: str = "normal"):
                 try:
                     pick, elapsed_here = powerups.choose_powerup(snap, win)
                     elapsed_here = int(elapsed_here or 0)
-                    if pick and pick.get("type") == "damage":
-                        sword_damage += int(pick.get("amount", 0))
+                    # apply powerup effects
+                    if pick:
+                        ptype = str(pick.get("type", "")).lower()
+                        if ptype == "damage":
+                            sword_damage += int(pick.get("amount", 0))
+                        elif ptype == "attackspeed":
+                            try:
+                                amt = float(pick.get("amount", 0.2))
+                                attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                            except Exception:
+                                pass
+                        elif ptype == "dashspeed":
+                            try:
+                                amt = float(pick.get("amount", 0.2))
+                                if stamina_regen_rate > 0:
+                                    stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
+                            except Exception:
+                                pass
+                        elif ptype == "speed":
+                            try:
+                                walk_mult = float(pick.get("walk_mult", 0.25))
+                                dash_mult = float(pick.get("dash_mult", 0.20))
+                                vel = vel * (1.0 + walk_mult)
+                                dash_speed = dash_speed * (1.0 + dash_mult)
+                            except Exception:
+                                pass
                 except Exception:
                     elapsed_here = 0
                 enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
