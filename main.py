@@ -7,10 +7,47 @@ from pathlib import Path
 from enemies import spawn_enemies, Enemy  # added: import enemy helpers
 import pause  # NEW: pause + death screens
 import powerups  # NEW: powerup selection UI
+import sounds  # NEW: gameplay music volume reference
 
 BASE_DIR = Path(__file__).parent
 def asset_path(*parts):
     return str(BASE_DIR.joinpath(*parts))
+
+# gameplay music helpers
+_game_music_started = False
+
+def _find_play_music():
+    base = Path(__file__).parent
+    snd_dir = base.joinpath('sounds')
+    if not snd_dir.exists():
+        return None
+    # look for explicit PlayBGM.* first
+    for ext in ("ogg", "mp3", "wav"):
+        p = snd_dir.joinpath(f"PlayBGM.{ext}")
+        if p.exists():
+            return str(p)
+    # optional fallbacks
+    for name in ("game", "gameplay", "bgm_play", "level", "run"):
+        for ext in ("ogg", "mp3", "wav"):
+            p = snd_dir.joinpath(f"{name}.{ext}")
+            if p.exists():
+                return str(p)
+    return None
+
+def _start_play_music():
+    global _game_music_started
+    if _game_music_started:
+        return
+    try:
+        path = _find_play_music()
+        if path:
+            pygame.mixer.music.load(path)
+            vol = getattr(sounds, 'MASTER_VOLUME', 1.0)
+            pygame.mixer.music.set_volume(vol)
+            pygame.mixer.music.play(-1)
+            _game_music_started = True
+    except Exception:
+        pass
 
 # ======================
 # GAME LOOP
@@ -30,6 +67,8 @@ def run_game(screen=None, difficulty: str = "normal"):
         # reuse the provided display surface (menu's SCREEN)
         win = screen
     clock = pygame.time.Clock()
+    # start gameplay music (menu music was stopped before calling this)
+    _start_play_music()
 
     # ======================
     # MAP DATA AND LOADER
