@@ -141,7 +141,15 @@ def show_death_screen(screen_surface):
 		# slightly smaller fonts so the title fits comfortably in the panel
 		title_f = get_font(40)
 		btn_f = get_font(20)
-
+		# stop any background music and play death SFX once
+		try: pygame.mixer.music.stop()
+		except Exception: pass
+		# Play specific death sound file: DeathSound
+		try:
+			sounds.preload('DeathSound')  # expects sounds/DeathSound.(ogg|mp3|wav)
+			sounds.play_sfx('DeathSound')
+		except Exception:
+			pass
 		# create a snapshot to darken background for effect
 		try:
 			snap = screen_surface.copy()
@@ -155,7 +163,6 @@ def show_death_screen(screen_surface):
 			mouse_pos = pygame.mouse.get_pos()
 			for ev in pygame.event.get():
 				if ev.type == pygame.QUIT:
-					# signal quit to menu
 					return ("menu", None)
 				if ev.type == pygame.KEYDOWN:
 					if ev.key == pygame.K_ESCAPE:
