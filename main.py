@@ -318,7 +318,33 @@ def run_game(screen=None, difficulty: str = "normal"):
     except Exception:
         snap = None
     try:
+        # pause/stop music while powerup menu is active
+        was_playing = False
+        try:
+            was_playing = pygame.mixer.music.get_busy()
+            if was_playing:
+                pygame.mixer.music.pause()
+        except Exception:
+            pass
+        # play LevelUp sound when showing powerup menu
+        try:
+            sounds.preload('LevelUp')
+            sounds.play_sfx('LevelUp')
+        except Exception:
+            pass
         pick, elapsed_ms = powerups.choose_powerup(snap, win)
+        # resume music afterwards
+        try:
+            if was_playing:
+                pygame.mixer.music.stop()
+                try:
+                    # reset music started flag safely
+                    globals()['_game_music_started'] = False
+                    _start_play_music()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         chooser_elapsed_pending = int(elapsed_ms or 0)
         # apply powerup effects
         if pick:
@@ -328,15 +354,12 @@ def run_game(screen=None, difficulty: str = "normal"):
             elif ptype == "attackspeed":
                 try:
                     amt = float(pick.get("amount", 0.2))
-                    # reduce attack cooldown by percentage (e.g. 0.2 -> 20%)
                     attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
                 except Exception:
                     pass
             elif ptype == "dashspeed":
                 try:
                     amt = float(pick.get("amount", 0.2))
-                    # reduce dash cooldown (time to recover stamina) by `amt` percent.
-                    # stamina_regen_rate is in units per second; to shorten time by amt, multiply by 1/(1-amt).
                     if stamina_regen_rate > 0:
                         stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
                 except Exception:
@@ -586,7 +609,33 @@ def run_game(screen=None, difficulty: str = "normal"):
                     snap = None
                 elapsed_here = 0
                 try:
+                    # pause/stop music while powerup menu is active
+                    was_playing = False
+                    try:
+                        was_playing = pygame.mixer.music.get_busy()
+                        if was_playing:
+                            pygame.mixer.music.pause()
+                    except Exception:
+                        pass
+                    # play LevelUp sound again when menu opens
+                    try:
+                        sounds.preload('LevelUp')
+                        sounds.play_sfx('LevelUp')
+                    except Exception:
+                        pass
                     pick, elapsed_here = powerups.choose_powerup(snap, win)
+                    # resume music afterwards
+                    try:
+                        if was_playing:
+                            pygame.mixer.music.stop()
+                            try:
+                                # reset music started flag safely
+                                globals()['_game_music_started'] = False
+                                _start_play_music()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     elapsed_here = int(elapsed_here or 0)
                     # apply powerup effects
                     if pick:
@@ -617,7 +666,6 @@ def run_game(screen=None, difficulty: str = "normal"):
                 except Exception:
                     elapsed_here = 0
                 enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
-                # grant temporary grace period after respawn / map change (1.5s) and account for chooser time
                 spawn_grace_timer = 1500 + elapsed_here
 
             if event.type == pygame.KEYDOWN and event.key in key_to_dir:
