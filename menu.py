@@ -1020,6 +1020,52 @@ def show_difficulty(snapshot, screen_surface):
         pygame.display.update()
         clock_local.tick(60)
 
+# Menu background music helpers
+_menu_music_started = False
+
+def _find_menu_music():
+    base = Path(__file__).parent
+    snd_dir = base.joinpath("sounds")
+    if not snd_dir.exists():
+        return None
+    # First, explicitly look for MainMenuBGM with common extensions
+    for ext in ("ogg", "mp3", "wav"):
+        p = snd_dir.joinpath(f"MainMenuBGM.{ext}")
+        if p.exists():
+            return str(p)
+    # Fallback to legacy name patterns if MainMenuBGM not found
+    for name in ("menu_music", "menu_theme", "music_menu", "menu", "background"):
+        for ext in ("ogg", "mp3", "wav"):
+            p = snd_dir.joinpath(f"{name}.{ext}")
+            if p.exists():
+                return str(p)
+    return None
+
+def start_menu_music():
+    global _menu_music_started
+    if _menu_music_started:
+        return
+    try:
+        path = _find_menu_music()
+        if path:
+            pygame.mixer.music.load(path)
+            vol = getattr(sounds, 'MASTER_VOLUME', 1.0)
+            pygame.mixer.music.set_volume(vol)
+            pygame.mixer.music.play(-1)
+            _menu_music_started = True
+    except Exception:
+        pass
+
+def stop_menu_music():
+    global _menu_music_started
+    if not _menu_music_started:
+        return
+    try:
+        pygame.mixer.music.stop()
+    except Exception:
+        pass
+    _menu_music_started = False
+
 def run_menu():
     global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen
     clock = pygame.time.Clock()
@@ -1050,6 +1096,7 @@ def run_menu():
     buttons = []
     btn_w = btn_h = btn_x = btn_y_start = btn_gap = 0
     create_assets()
+    start_menu_music()  # start looping menu music
 
     # Options overlay UI (nested so it can reuse create_assets/context)
     def run_options(snapshot):
@@ -1094,21 +1141,20 @@ def run_menu():
                         snap = None
                     chosen = show_difficulty(snap, SCREEN)
                     if chosen is None:
-                        # cancelled
-                        pass
+                        pass  # keep music playing
                     else:
+                        stop_menu_music()  # stop before entering game
                         import main
-                        # pass chosen difficulty into the game
                         main.run_game(SCREEN, difficulty=chosen)
+                        start_menu_music()  # resume after returning from game
                     create_assets()
                 elif buttons[1].is_clicked((mx, my)):
                     sounds.play_sfx('SelectSound')
-                    try:
-                        snap = SCREEN.copy()
-                    except Exception:
-                        snap = None
+                    try: snap = SCREEN.copy()
+                    except Exception: snap = None
                     res = show_shop(snap, SCREEN)
                     if res and res[0] == "menu":
+                        stop_menu_music()
                         return
                 elif buttons[2].is_clicked((mx, my)):
                     sounds.play_sfx('SelectSound')
@@ -1121,8 +1167,8 @@ def run_menu():
                         create_assets()
                 elif buttons[3].is_clicked((mx, my)):
                     sounds.play_sfx('SelectSound')
-                    pygame.quit()
-                    sys.exit()
+                    stop_menu_music()
+                    pygame.quit(); sys.exit()
         # draw background and grey square border
         SCREEN.blit(background, (0, 0))
         border_margin = 20
