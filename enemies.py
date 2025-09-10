@@ -97,11 +97,43 @@ class Enemy:
         # marker used to let external code (main) know this enemy died THIS FRAME
         self._died_this_frame = False
 
+        self.stun_timer = 0  # ms remaining for shield stun
+        # POISON state
+        self.poison_stacks = 0           # number of poison stacks
+        self.poison_tick_interval = 1500 # ms between ticks
+        self.poison_tick_timer = 0       # countdown timer
+        self.poison_green_timer = 0      # ms for green flash on tick
+        self.poison_green_duration = 140
+        # damage event queue (collected by main each frame)
+        self._damage_events: List[Dict[str, float]] = []
+
     def rect(self) -> pygame.Rect:
         return pygame.Rect(int(self.x), int(self.y), self.size, self.size)
 
+    def _push_damage_event(self, amount: int, color: Tuple[int, int, int]) -> None:
+        try:
+            self._damage_events.append({
+                'x': self.x + self.size / 2.0,
+                'y': self.y - 6.0,
+                'amt': int(max(0, amount)),
+                'color': color,
+            })
+        except Exception:
+            pass
+
+    def drain_damage_events(self) -> List[Dict[str, float]]:
+        ev = self._damage_events
+        self._damage_events = []
+        return ev
+
     def take_damage(self, amount: int = 1) -> None:
         self.hp -= amount
+        # normal damage indicator (red)
+        try:
+            if amount > 0:
+                self._push_damage_event(amount, (200, 40, 40))
+        except Exception:
+            pass
         if self.hp <= 0:
             self.alive = False
             # mark for external consumers to spawn death particles once
@@ -127,6 +159,15 @@ class Enemy:
             self.kb_time = kb_duration
             self.kb_duration = kb_duration
 
+    def apply_poison(self, stacks: int = 1) -> None:
+        """Apply/stack poison. Each stack deals 1 dmg per tick. Resets timer if not running."""
+        try:
+            self.poison_stacks += max(0, int(stacks))
+            if self.poison_stacks > 0 and self.poison_tick_timer <= 0:
+                self.poison_tick_timer = self.poison_tick_interval
+        except Exception:
+            pass
+
     def update(
         self,
         dt: int,
@@ -139,6 +180,51 @@ class Enemy:
     ) -> None:
         if not self.alive:
             return
+
+        # Always tick hit flash even when stunned (prevents stuck red tint)
+        if self.flash_timer > 0:
+            self.flash_timer -= dt
+            if self.flash_timer < 0:
+                self.flash_timer = 0
+        # Poison green flash timer
+        if self.poison_green_timer > 0:
+            self.poison_green_timer -= dt
+            if self.poison_green_timer < 0:
+                self.poison_green_timer = 0
+
+        # --- SHIELD STUN LOGIC ---
+        if hasattr(self, "stun_timer") and self.stun_timer > 0:
+            self.stun_timer -= dt
+            if self.stun_timer > 0:
+                # While stunned, existing projectiles should keep flying; just don't cast new ones
+                if self.can_cast and self.projectiles:
+                    pruned: List[Dict[str, float]] = []
+                    for p in self.projectiles:
+                        # move scaled similar to other movement
+                        p['x'] += p['vx'] * p['speed'] * (dt / 16.0)
+                        p['y'] += p['vy'] * p['speed'] * (dt / 16.0)
+                        # advance rotational angle (spin is degrees per second)
+                        try:
+                            p['angle'] = (p.get('angle', 0.0) + p.get('spin', 0.0) * (dt / 1000.0)) % 360.0
+                        except Exception:
+                            p['angle'] = p.get('angle', 0.0)
+                        # prune if hit wall / OOB
+                        try:
+                            hit_wall = False
+                            if is_wall is not None:
+                                hit_wall = bool(is_wall(p['x'], p['y']))
+                            if hit_wall:
+                                try:
+                                    if on_projectile_break:
+                                        on_projectile_break(p['x'], p['y'], p)
+                                except Exception:
+                                    pass
+                                continue
+                            pruned.append(p)
+                        except Exception:
+                            pruned.append(p)
+                    self.projectiles = pruned
+                return  # skip movement/attacks while stunned
 
         # process knockback first (applied over kb_duration)
         if self.kb_time > 0 and (abs(self.kb_vx) > 1e-6 or abs(self.kb_vy) > 1e-6):
@@ -190,6 +276,31 @@ class Enemy:
             self.trap_damage_timer -= dt
             if self.trap_damage_timer < 0:
                 self.trap_damage_timer = 0
+        # Poison ticking: deals damage every interval while alive
+        if self.poison_stacks > 0 and self.alive:
+            self.poison_tick_timer -= dt
+            if self.poison_tick_timer <= 0:
+                # deal damage equal to stacks as poison (green indicator)
+                dmg = int(max(1, self.poison_stacks))
+                try:
+                    self.hp -= dmg
+                except Exception:
+                    pass
+                # start green flash and queue a green indicator
+                self.poison_green_timer = self.poison_green_duration
+                try:
+                    self._push_damage_event(dmg, (60, 200, 60))
+                except Exception:
+                    pass
+                # reset interval for next tick
+                self.poison_tick_timer += self.poison_tick_interval
+                # handle death
+                if self.hp <= 0:
+                    self.alive = False
+                    try:
+                        self._died_this_frame = True
+                    except Exception:
+                        pass
 
         px, py = player_pos
         cx = self.x + self.size / 2
@@ -842,14 +953,19 @@ class Enemy:
                 if not frames:
                     return
                 img = frames[self.frame % len(frames)]
-        # tint red slightly when recently hit
+        # tint layers: red when hit, green when poison ticks (green overrides red briefly)
         draw_img = img
-        if getattr(self, "flash_timer", 0) > 0:
+        if getattr(self, "poison_green_timer", 0) > 0:
+            try:
+                draw_img = img.copy()
+                draw_img.fill((60, 200, 60, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            except Exception:
+                draw_img = img
+        elif getattr(self, "flash_timer", 0) > 0:
             try:
                 draw_img = img.copy()
                 draw_img.fill((200, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
             except Exception:
-                # fallback: no tint if copy fails
                 draw_img = img
         surface.blit(draw_img, (int(self.x) + offset_x, int(self.y) + offset_y))
 
@@ -967,7 +1083,7 @@ def spawn_enemies(
         if kind_choice == "slime":
             s_size = max(16, int(enemy_size * 0.75))  # slimes slightly smaller
             s_speed = 0.0                             # slimes move by jumping
-            s_hp = 6
+            s_hp = 10
             sprite_dict = load_enemy_sprites(slime_files, s_size) or None
             ex = tlx + (tile_size - s_size) / 2
             ey = tly + (tile_size - s_size) / 2

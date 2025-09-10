@@ -116,6 +116,25 @@ def run_game(screen=None, difficulty: str = "normal"):
     swing_arc = 120  # degrees of swing
     sword_damage = 5
     attack_hits = set()  # track enemies hit this swing (store id(enemy))
+    # Poison level from powerups (stacks)
+    poison_level = 0
+
+    # --- SHIELD POWERUP STATE ---
+    shield_count = 0
+    shield_angle = 0.0
+    shield_img = load_sprite("shield.png", size=48)
+    if shield_img is None:
+        shield_img = pygame.Surface((48, 48), pygame.SRCALPHA)
+        pygame.draw.circle(shield_img, (0, 255, 255), (24, 24), 20)  # Cyan circle as fallback
+    shield_radius = 64  # distance from player center
+    shield_stun_duration = 500  # ms
+
+    # Stun indicator sprite (native size)
+    try:
+        stunned_img = pygame.image.load(asset_path("sprites", "stunned.png")).convert_alpha()
+    except Exception:
+        # fallback to scaled loader if native load fails
+        stunned_img = load_sprite("stunned.png", size=48)
 
     # Trap sprites
     trap_off_img = load_sprite("trap_off.png")
@@ -310,6 +329,13 @@ def run_game(screen=None, difficulty: str = "normal"):
                     dash_speed = dash_speed * (1.0 + dash_mult)
                 except Exception:
                     pass
+            elif ptype == "shield":
+                shield_count += int(pick.get("amount", 1))
+            elif ptype == "poison":
+                try:
+                    poison_level += int(pick.get("amount", 1))
+                except Exception:
+                    poison_level += 1
     except Exception:
         chooser_elapsed_pending = 0
 
@@ -464,6 +490,18 @@ def run_game(screen=None, difficulty: str = "normal"):
     on_trap_prev = False
 
     run = True
+    # Floating damage indicators (use bundled font if available)
+    dmg_indicators = []  # each: {'x','y','text','color','life','vy'}
+    try:
+        font_path = None
+        for ext in ("ttf", "otf"):
+            cand = asset_path("sprites", f"font.{ext}")
+            if os.path.exists(cand):
+                font_path = cand
+                break
+        dmg_font = pygame.font.Font(font_path, 22) if font_path else pygame.font.SysFont("arial", 22, bold=True)
+    except Exception:
+        dmg_font = None
     while run:
         dt = clock.tick(60)
 
@@ -572,6 +610,13 @@ def run_game(screen=None, difficulty: str = "normal"):
                                 dash_speed = dash_speed * (1.0 + dash_mult)
                             except Exception:
                                 pass
+                        elif ptype == "shield":
+                            shield_count += int(pick.get("amount", 1))
+                        elif ptype == "poison":
+                            try:
+                                poison_level += int(pick.get("amount", 1))
+                            except Exception:
+                                poison_level += 1
                 except Exception:
                     elapsed_here = 0
                 enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
@@ -801,6 +846,36 @@ def run_game(screen=None, difficulty: str = "normal"):
         draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
         # draw/update death particle debris (map-grounded)
         update_and_draw_particles(dt, win)
+        # Floating damage indicators: update and draw
+        try:
+            pruned = []
+            for ind in dmg_indicators:
+                ind['life'] -= dt
+                ind['y'] += ind['vy'] * dt
+                if ind['life'] > 0 and dmg_font is not None:
+                    # fade alpha near the end
+                    a = 255
+                    if ind['life'] < 200:
+                        a = max(0, int(255 * (ind['life'] / 200.0)))
+                    # composite outlined text
+                    outline_w = 2
+                    base = dmg_font.render(ind['text'], True, ind['color'])
+                    outline = dmg_font.render(ind['text'], True, (0, 0, 0))
+                    w = base.get_width() + outline_w * 2
+                    h = base.get_height() + outline_w * 2
+                    comp = pygame.Surface((w, h), pygame.SRCALPHA)
+                    for ox, oy in [(-outline_w, 0), (outline_w, 0), (0, -outline_w), (0, outline_w),
+                                   (-outline_w, -outline_w), (outline_w, -outline_w), (-outline_w, outline_w), (outline_w, outline_w)]:
+                        comp.blit(outline, (ox + outline_w, oy + outline_w))
+                    comp.blit(base, (outline_w, outline_w))
+                    if a < 255:
+                        comp.set_alpha(a)
+                    win.blit(comp, (int(ind['x'] - comp.get_width() / 2), int(ind['y'])))
+                if ind['life'] > 0:
+                    pruned.append(ind)
+            dmg_indicators = pruned
+        except Exception:
+            pass
 
         def make_is_walkable(size):
             def is_walkable(new_x: float, new_y: float) -> bool:
@@ -853,6 +928,20 @@ def run_game(screen=None, difficulty: str = "normal"):
             if e.alive:
                 # pass callbacks; per-enemy view logic lives inside Enemy.update
                 e.update(dt, player_center, make_is_walkable(e.size), on_trap, is_lava, is_wall)
+        # Collect damage events from enemies after update
+        for e in enemies:
+            try:
+                for ev in e.drain_damage_events():
+                    dmg_indicators.append({
+                        'x': float(ev.get('x', getattr(e, 'x', 0) + getattr(e, 'size', 0) / 2)),
+                        'y': float(ev.get('y', getattr(e, 'y', 0))),
+                        'text': f"-{int(ev.get('amt', 0))}",
+                        'color': tuple(ev.get('color', (200, 40, 40))),
+                        'life': 600,
+                        'vy': -0.04
+                    })
+            except Exception:
+                pass
         # spawn particles for enemies that died THIS FRAME
         for e in enemies:
             if (not e.alive) and getattr(e, "_died_this_frame", False):
@@ -870,6 +959,16 @@ def run_game(screen=None, difficulty: str = "normal"):
         for e in enemies:
             if e.alive:
                 e.draw(win)
+                # Stun indicator overlay using stunned.png above enemy while stunned
+                if getattr(e, 'stun_timer', 0) > 0 and stunned_img is not None:
+                    try:
+                        icon = stunned_img
+                        cx = int(e.x + e.size/2)
+                        top = int(e.y) - 10
+                        rect = icon.get_rect(center=(cx, top))
+                        win.blit(icon, rect.topleft)
+                    except Exception:
+                        pass
 
         # --- NEW: enemy projectiles can hit the player (mage magic) ---
         # use player_center computed from previous frame; handle once per frame
@@ -935,7 +1034,7 @@ def run_game(screen=None, difficulty: str = "normal"):
         if invincible_timer <= 0 and spawn_grace_timer <= 0 and not is_dashing:
              for e in enemies:
                  # skip dead enemies and skip direct contact damage from mages (they damage via projectiles)
-                 if not e.alive or getattr(e, "can_cast", False):
+                 if not e.alive or getattr(e, "can_cast", False) or getattr(e, "stun_timer", 0) > 0:
                       continue
                  if e.rect().colliderect(player_rect):
                       hearts -= 1
@@ -1091,6 +1190,12 @@ def run_game(screen=None, difficulty: str = "normal"):
                         continue
                     # hit: deal damage and apply knockback away from player
                     e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
+                    # apply poison stacks if any were selected
+                    if poison_level > 0:
+                        try:
+                            e.apply_poison(poison_level)
+                        except Exception:
+                            pass
                     attack_hits.add(eid)
 
             # --- New: allow sword to break mage projectiles ---
@@ -1130,6 +1235,58 @@ def run_game(screen=None, difficulty: str = "normal"):
             hx = start_x + i * (heart_w + heart_spacing)
             img = heart_full if i < hearts else heart_empty
             win.blit(img, (hx, heart_y))
+
+        # --- SHIELD LOGIC: update shield angle ---
+        if shield_count > 0:
+            shield_angle = (shield_angle + 3 * (dt / 1000.0)) % (2 * math.pi)  # Slower rotation: 0.5 radians per second
+
+        # --- DRAW SHIELD(S) ---
+        if shield_count > 0:
+            for i in range(shield_count):
+                angle = shield_angle + (2 * math.pi * i / shield_count)
+                px, py = player_center
+                sx = int(px + shield_radius * math.cos(angle) - shield_img.get_width() // 2)
+                sy = int(py + shield_radius * math.sin(angle) - shield_img.get_height() // 2)
+                win.blit(shield_img, (sx, sy))
+
+        # --- SHIELD COLLISION WITH ENEMIES ---
+        if shield_count > 0:
+            for enemy in enemies:
+                if not getattr(enemy, "alive", True):
+                    continue
+                ex, ey = enemy.x + enemy.size // 2, enemy.y + enemy.size // 2
+                for i in range(shield_count):
+                    angle = shield_angle + (2 * math.pi * i / shield_count)
+                    px, py = player_center
+                    sx = px + shield_radius * math.cos(angle)
+                    sy = py + shield_radius * math.sin(angle)
+                    dist = math.hypot(ex - sx, ey - sy)
+                    if dist < (enemy.size // 2 + shield_img.get_width() // 2):
+                        if not hasattr(enemy, "stun_timer") or enemy.stun_timer <= 0:
+                            enemy.stun_timer = shield_stun_duration
+                        dx = ex - sx
+                        dy = ey - sy
+                        norm = math.hypot(dx, dy)
+                        if norm > 1e-3:
+                            enemy.kb_vx = (dx / norm) * 8
+                            enemy.kb_vy = (dy / norm) * 8
+                            enemy.kb_time = 120
+
+        # --- SHIELD COLLISION WITH PROJECTILES ---
+        for enemy in enemies:
+            if hasattr(enemy, "projectiles"):
+                for proj in list(enemy.projectiles):
+                    px_proj = proj.get("x", 0)
+                    py_proj = proj.get("y", 0)
+                    for i in range(shield_count):
+                        angle = shield_angle + (2 * math.pi * i / shield_count)
+                        px, py = player_center
+                        sx = px + shield_radius * math.cos(angle)
+                        sy = py + shield_radius * math.sin(angle)
+                        dist = math.hypot(px_proj - sx, py_proj - sy)
+                        if dist < (shield_img.get_width() // 2 + 8):
+                            enemy.projectiles.remove(proj)
+                            break
 
         pygame.display.update()
 

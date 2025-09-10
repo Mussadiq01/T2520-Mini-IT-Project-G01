@@ -112,6 +112,8 @@ def choose_powerup(snapshot, screen_surface):
         "attackspeed": "attackspeed_card.png",
         "dashspeed": "dashspeed_card.png",
         "speed": "speed_card.png",
+        "shield": "shield_card.png",  # NEW: shield card
+        "poison": "poison_card.png",  # NEW: poison card
     }
     for key, fname in keys_and_files.items():
         fp = base.joinpath("sprites", fname)
@@ -129,9 +131,11 @@ def choose_powerup(snapshot, screen_surface):
     # define candidate powerups
     pool = [
         {"id": "damage", "type": "damage", "amount": 5, "label": "+5 Damage"},
-        {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Speed"},
+        {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Recovery"},
         {"id": "dashspeed", "type": "dashspeed", "amount": 0.20, "label": "+20% Dash Recovery"},
-        {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"}
+        {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"},
+        {"id": "shield", "type": "shield", "amount": 1, "label": "+1 Rotating Shield"},
+        {"id": "poison", "type": "poison", "amount": 1, "label": "Poison Touch"},  # NEW
     ]
 
     # randomly pick three distinct cards to show
