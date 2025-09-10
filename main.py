@@ -7,10 +7,51 @@ from pathlib import Path
 from enemies import spawn_enemies, Enemy  # added: import enemy helpers
 import pause  # NEW: pause + death screens
 import powerups  # NEW: powerup selection UI
+import sounds  # NEW: gameplay music volume reference
 
 BASE_DIR = Path(__file__).parent
 def asset_path(*parts):
     return str(BASE_DIR.joinpath(*parts))
+
+# gameplay music helpers (added)
+_game_music_started = False
+
+def _find_play_music():
+    base = Path(__file__).parent
+    snd_dir = base.joinpath('sounds')
+    if not snd_dir.exists():
+        return None
+    for ext in ("ogg", "mp3", "wav"):
+        p = snd_dir.joinpath(f"PlayBGM.{ext}")
+        if p.exists():
+            return str(p)
+    for name in ("game", "gameplay", "bgm_play", "level", "run"):
+        for ext in ("ogg", "mp3", "wav"):
+            p = snd_dir.joinpath(f"{name}.{ext}")
+            if p.exists():
+                return str(p)
+    return None
+
+def _start_play_music():
+    global _game_music_started
+    if _game_music_started:
+        try:
+            if pygame.mixer.music.get_busy():
+                return
+            else:
+                _game_music_started = False
+        except Exception:
+            _game_music_started = False
+    try:
+        path = _find_play_music()
+        if path:
+            pygame.mixer.music.load(path)
+            vol = getattr(sounds, 'MASTER_VOLUME', 1.0)
+            pygame.mixer.music.set_volume(vol)
+            pygame.mixer.music.play(-1)
+            _game_music_started = True
+    except Exception:
+        pass
 
 # ======================
 # GAME LOOP
@@ -30,6 +71,7 @@ def run_game(screen=None, difficulty: str = "normal"):
         # reuse the provided display surface (menu's SCREEN)
         win = screen
     clock = pygame.time.Clock()
+    _start_play_music()  # start gameplay music
 
     # ======================
     # MAP DATA AND LOADER
@@ -298,7 +340,32 @@ def run_game(screen=None, difficulty: str = "normal"):
     except Exception:
         snap = None
     try:
+        # pause/stop music while powerup menu is active
+        was_playing = False
+        try:
+            was_playing = pygame.mixer.music.get_busy()
+            if was_playing:
+                pygame.mixer.music.pause()
+        except Exception:
+            pass
+        # play LevelUp sound when showing powerup menu
+        try:
+            sounds.preload('LevelUp')
+            sounds.play_sfx('LevelUp')
+        except Exception:
+            pass
         pick, elapsed_ms = powerups.choose_powerup(snap, win)
+        # resume music afterwards
+        try:
+            if was_playing:
+                pygame.mixer.music.stop()
+                try:
+                    globals()['_game_music_started'] = False
+                    _start_play_music()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         chooser_elapsed_pending = int(elapsed_ms or 0)
         # apply powerup effects
         if pick:
@@ -315,8 +382,6 @@ def run_game(screen=None, difficulty: str = "normal"):
             elif ptype == "dashspeed":
                 try:
                     amt = float(pick.get("amount", 0.2))
-                    # reduce dash cooldown (time to recover stamina) by `amt` percent.
-                    # stamina_regen_rate is in units per second; to shorten time by amt, multiply by 1/(1-amt).
                     if stamina_regen_rate > 0:
                         stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
                 except Exception:
@@ -341,6 +406,13 @@ def run_game(screen=None, difficulty: str = "normal"):
 
     # spawn enemies
     enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+    # preload sounds
+    try: sounds.preload('HitSound')
+    except Exception: pass
+    try: sounds.preload('Damaged')
+    except Exception: pass
+    try: sounds.preload('Dash')
+    except Exception: pass
 
     # --- DEATH PARTICLES SYSTEM ---
     # Each particle: {'x','y','vx','vy','size','color',(optional) 'life_ms'}
@@ -582,7 +654,32 @@ def run_game(screen=None, difficulty: str = "normal"):
                     snap = None
                 elapsed_here = 0
                 try:
+                    # pause/stop music while powerup menu is active
+                    was_playing = False
+                    try:
+                        was_playing = pygame.mixer.music.get_busy()
+                        if was_playing:
+                            pygame.mixer.music.pause()
+                    except Exception:
+                        pass
+                    # play LevelUp sound again when menu opens
+                    try:
+                        sounds.preload('LevelUp')
+                        sounds.play_sfx('LevelUp')
+                    except Exception:
+                        pass
                     pick, elapsed_here = powerups.choose_powerup(snap, win)
+                    # resume music afterwards
+                    try:
+                        if was_playing:
+                            pygame.mixer.music.stop()
+                            try:
+                                globals()['_game_music_started'] = False
+                                _start_play_music()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     elapsed_here = int(elapsed_here or 0)
                     # apply powerup effects
                     if pick:
@@ -623,38 +720,40 @@ def run_game(screen=None, difficulty: str = "normal"):
                 # grant temporary grace period after respawn / map change (1.5s) and account for chooser time
                 spawn_grace_timer = 1500 + elapsed_here
 
-            if event.type == pygame.KEYDOWN and event.key in key_to_dir:
-                d = key_to_dir[event.key]
-                if d not in pressed_dirs:
-                    pressed_dirs.append(d)
-                if not is_dashing:
-                    last_direction = pressed_dirs[-1]
-
-            if event.type == pygame.KEYUP and event.key in key_to_dir:
-                d = key_to_dir[event.key]
-                if d in pressed_dirs:
-                    pressed_dirs.remove(d)
-                if not is_dashing:
-                    if pressed_dirs:
-                        last_direction = pressed_dirs[-1]
-                    else:
-                        frame_index = 0
-
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                if not is_dashing and stamina >= 1.0 and pressed_dirs:
-                    is_dashing = True
-                    dash_timer = dash_duration
-                    stamina -= 1.0
+                if not is_dashing and stamina >= 1.0:
+                    # Determine dash direction from current key state; fallback to last_direction
+                    keys = pygame.key.get_pressed()
                     dx_tmp, dy_tmp = 0, 0
-                    if "left" in pressed_dirs: dx_tmp -= 1
-                    if "right" in pressed_dirs: dx_tmp += 1
-                    if "up" in pressed_dirs: dy_tmp -= 1
-                    if "down" in pressed_dirs: dy_tmp += 1
-                    if dx_tmp != 0 and dy_tmp != 0:
-                        norm = math.sqrt(dx_tmp*dx_tmp + dy_tmp*dy_tmp)
+                    if keys[pygame.K_a]:
+                        dx_tmp -= 1
+                    if keys[pygame.K_d]:
+                        dx_tmp += 1
+                    if keys[pygame.K_w]:
+                        dy_tmp -= 1
+                    if keys[pygame.K_s]:
+                        dy_tmp += 1
+                    if dx_tmp == 0 and dy_tmp == 0:
+                        if last_direction == "left":
+                            dx_tmp = -1
+                        elif last_direction == "right":
+                            dx_tmp = 1
+                        elif last_direction == "up":
+                            dy_tmp = -1
+                        elif last_direction == "down":
+                            dy_tmp = 1
+                    if dx_tmp != 0 or dy_tmp != 0:
+                        norm = math.hypot(dx_tmp, dy_tmp)
                         dx_tmp /= norm
                         dy_tmp /= norm
-                    dash_dir = (dx_tmp, dy_tmp)
+                        dash_dir = (dx_tmp, dy_tmp)
+                        is_dashing = True
+                        dash_timer = dash_duration
+                        stamina -= 1.0
+                        try:
+                            sounds.play_sfx('Dash')
+                        except Exception:
+                            pass
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if not attacking and cooldown_timer <= 0:
@@ -703,13 +802,14 @@ def run_game(screen=None, difficulty: str = "normal"):
             if knocked:
                 dx = dy = 0
             else:
-                if "left" in pressed_dirs and keys[pygame.K_a]:
+                # Use current key state for movement so walking doesn't depend on pressed_dirs
+                if keys[pygame.K_a]:
                     dx -= 1
-                if "right" in pressed_dirs and keys[pygame.K_d]:
+                if keys[pygame.K_d]:
                     dx += 1
-                if "up" in pressed_dirs and keys[pygame.K_w]:
+                if keys[pygame.K_w]:
                     dy -= 1
-                if "down" in pressed_dirs and keys[pygame.K_s]:
+                if keys[pygame.K_s]:
                     dy += 1
                 if dx != 0 and dy != 0:
                     norm = math.sqrt(dx*dx + dy*dy)
@@ -738,6 +838,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
                             # death by lava
+                            try: sounds.play_sfx('Damaged')
+                            except Exception: pass
                             try:
                                 pause.show_death_screen(win)
                             except Exception:
@@ -775,6 +877,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
                         # death by lava
+                        try: sounds.play_sfx('Damaged')
+                        except Exception: pass
                         try:
                             pause.show_death_screen(win)
                         except Exception:
@@ -997,6 +1101,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                     if pdist <= proj_radius:
                         # projectile hit player
                         hearts -= 1
+                        try: sounds.play_sfx('Damaged')
+                        except Exception: pass
                         # knockback away from projectile direction
                         try:
                             vx = p.get('vx', 0.0)
@@ -1038,6 +1144,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                       continue
                  if e.rect().colliderect(player_rect):
                       hearts -= 1
+                      try: sounds.play_sfx('Damaged')
+                      except Exception: pass
                       ecx = e.x + e.size / 2
                       ecy = e.y + e.size / 2
                       pcx = x + char_size / 2
@@ -1196,6 +1304,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                             e.apply_poison(poison_level)
                         except Exception:
                             pass
+                    try: sounds.play_sfx('HitSound')
+                    except Exception: pass
                     attack_hits.add(eid)
 
             # --- New: allow sword to break mage projectiles ---

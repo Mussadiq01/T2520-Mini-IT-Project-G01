@@ -266,11 +266,6 @@ class Enemy:
                 self.kb_vy = 0.0
                 self.kb_time = 0
 
-        # decrement flash timer
-        if self.flash_timer > 0:
-            self.flash_timer -= dt
-            if self.flash_timer < 0:
-                self.flash_timer = 0
         # trap damage cooldown tick
         if getattr(self, "trap_damage_timer", 0) > 0:
             self.trap_damage_timer -= dt
