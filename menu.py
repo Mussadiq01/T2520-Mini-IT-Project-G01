@@ -2,19 +2,76 @@ import pygame
 import sys
 from pathlib import Path
 import os
+import json  # added for persistence
 
 pygame.init()
+
+# === Save / Load System ===
+SAVE_PATH = Path(__file__).parent / "save.json"
+_DEFAULT_SAVE = {
+    "version": 1,
+    "coins": 10000,
+    "difficulty": "normal",
+    "weapons_purchased": ["Sword"],
+    "armors_purchased": [],
+    "weapons_upgrades": {},
+    "weapons_equipped": None,
+    "armors_equipped": None
+}
+
+def _load_save():
+    try:
+        if SAVE_PATH.exists():
+            with open(SAVE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError
+            # merge defaults
+            out = dict(_DEFAULT_SAVE)
+            out.update({k: v for k, v in data.items() if k in _DEFAULT_SAVE})
+            if "Sword" not in out["weapons_purchased"]:
+                out["weapons_purchased"].append("Sword")
+            if not isinstance(out.get("weapons_upgrades"), dict):
+                out["weapons_upgrades"] = {}
+            return out
+    except Exception:
+        pass
+    return dict(_DEFAULT_SAVE)
+
+def _save():
+    try:
+        with open(SAVE_PATH, "w", encoding="utf-8") as f:
+            json.dump(SAVE, f, indent=2)
+    except Exception:
+        pass
+
+SAVE = _load_save()
+
+# expose simple helpers
+def add_coins(delta: int):
+    SAVE["coins"] = max(0, int(SAVE.get("coins", 0)) + int(delta))
+    _save()
+
+def spend_coins(cost: int) -> bool:
+    if SAVE["coins"] >= cost:
+        SAVE["coins"] -= cost
+        _save()
+        return True
+    return False
+
+def set_difficulty(diff: str):
+    SAVE["difficulty"] = diff
+    _save()
 
 # Screen setup - start fullscreen (toggleable with F11)
 display_info = pygame.display.Info()
 SCREEN_W, SCREEN_H = display_info.current_w, display_info.current_h
-# create fullscreen surface and track state
 SCREEN = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.FULLSCREEN)
 pygame.display.set_caption("Descend")
 is_fullscreen = True
 
-# player currency shown in shop
-PLAYER_COINS = 10000
+# player currency shown in shop (now from save)
+PLAYER_COINS = SAVE.get("coins", 10000)
 
 # Font helper
 def get_font(size):
@@ -282,7 +339,7 @@ def show_shop(snapshot, screen_surface):
         coin_img = pygame.Surface((36, 36), pygame.SRCALPHA)
         pygame.draw.circle(coin_img, (212, 175, 55), (18, 18), 16)
 
-    coins = PLAYER_COINS
+    coins = SAVE.get("coins", 0)  # use persistent coins
 
     # per-item descriptions (unique for each item) - make available for resolver
     weapons_desc = {
@@ -308,10 +365,12 @@ def show_shop(snapshot, screen_surface):
 
     # purchased / inventory state persists while shop is open (can be saved later)
     # First weapon (Sword) is already unlocked
-    weapons_purchased = set(["Sword"])
-    armors_purchased = set()
+    weapons_purchased = set(SAVE.get("weapons_purchased", ["Sword"]))
+    armors_purchased = set(SAVE.get("armors_purchased", []))
     # track per-weapon upgrade levels (0..3)
-    weapons_upgrades = {name: 0 for name in weapons}
+    weapons_upgrades = dict(SAVE.get("weapons_upgrades", {}))
+    weapons_equipped = None if SAVE.get("weapons_equipped") is None else next((i for i,w in enumerate(["Sword","Mallet","Dagger","Katana","The Descender"]) if w == SAVE.get("weapons_equipped")), None)
+    armors_equipped = None if SAVE.get("armors_equipped") is None else next((i for i,a in enumerate(["Wood","Iron","Diamond","Gold","Leather"]) if a == SAVE.get("armors_equipped")), None)
 
     # small helper to resolve a textual description for an item name consistently
     def resolve_desc(item_name: str) -> str:
@@ -380,6 +439,10 @@ def show_shop(snapshot, screen_surface):
         clock_modal = pygame.time.Clock()
         # choose description & price heuristically from name
         price = 50 if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name else 35 if "Armor" in item_name or "Chestplate" in item_name else 20
+        # override with specific mapping for our listed items
+        specific_prices = {"Sword":0, "Mallet":120, "Dagger":90, "Katana":180, "The Descender":500,
+                           "Wood":40, "Iron":120, "Diamond":400, "Gold":80, "Leather":60}
+        price = specific_prices.get(item_name, price)
 
         # resolve description using helper (consistent with bottom preview)
         desc = resolve_desc(item_name)
@@ -404,33 +467,39 @@ def show_shop(snapshot, screen_surface):
                     mx2,my2 = ev2.pos
                     if not purchased:
                         if buy_rect.collidepoint((mx2,my2)):
-                            # mark as purchased — persist to outer shop state
-                            purchased = True
-                            # add to the correct purchased set depending on which list contains the item
-                            try:
+                            # attempt purchase if enough coins
+                            if price == 0 or SAVE["coins"] >= price:
+                                if price > 0:
+                                    spend_coins(price)
                                 if item_name in weapons:
                                     weapons_purchased.add(item_name)
-                                elif item_name in armors:
+                                    SAVE["weapons_purchased"] = list(weapons_purchased)
+                                else:
                                     armors_purchased.add(item_name)
-                            except Exception:
-                                # fallback: treat as weapon
-                                weapons_purchased.add(item_name)
+                                    SAVE["armors_purchased"] = list(armors_purchased)
+                                _save()
+                                purchased = True
                         elif back_rect.collidepoint((mx2,my2)):
                             return ("back", None)
                     else:
-                        # after purchase show Equip / Upgrade buttons (handled below) — clicks return action
                         if equip_rect.collidepoint((mx2,my2)):
-                            # ensure equipped items are considered purchased as well
-                            try:
-                                if item_name in weapons:
-                                    weapons_purchased.add(item_name)
-                                elif item_name in armors:
-                                    armors_purchased.add(item_name)
-                            except Exception:
-                                weapons_purchased.add(item_name)
+                            if item_name in weapons:
+                                SAVE["weapons_equipped"] = item_name
+                            else:
+                                SAVE["armors_equipped"] = item_name
+                            _save()
                             return ("equip", item_name)
                         if upgrade_rect.collidepoint((mx2,my2)):
-                            return ("upgrade", item_name)
+                            if item_name in weapons_upgrades:
+                                cur_level = weapons_upgrades.get(item_name, 0)
+                                if cur_level < 3:
+                                    # upgrade cost: 100 * (next level)
+                                    up_cost = 100 * (cur_level + 1)
+                                    if spend_coins(up_cost):
+                                        weapons_upgrades[item_name] = cur_level + 1
+                                        SAVE["weapons_upgrades"][item_name] = cur_level + 1
+                                        _save()
+                                        return ("upgrade", item_name)
                         if back_rect.collidepoint((mx2,my2)):
                             return ("back", None)
 
@@ -648,7 +717,7 @@ def show_shop(snapshot, screen_surface):
             # blit coin image at left side of the panel
             screen_surface.blit(coin_img, (coin_panel.left + 8, coin_panel.top + (coin_panel.height - coin_img.get_height())//2))
             coin_font = get_font(20)
-            coin_surf = coin_font.render(f"{coins}", True, (212,175,55))
+            coin_surf = coin_font.render(f"{SAVE.get('coins',0)}", True, (212,175,55))
             screen_surface.blit(coin_surf, coin_surf.get_rect(midleft=(coin_panel.left + 56, coin_panel.centery)))
         except Exception:
             # defensive: ignore coin panel drawing errors
@@ -701,12 +770,21 @@ def show_shop(snapshot, screen_surface):
                     screen_surface.blit(img, img.get_rect(center=item_rect.center))
                 except Exception:
                     screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
-                # render name but ellipsize to fit within item width + small margin
+                # render name (special case: split 'The Descender' into two lines)
                 try:
-                    max_name_w = item_w + 16
-                    display_name = ellipsize(name, item_f, max_name_w)
-                    nm = item_f.render(display_name, True, (220,220,220))
-                    screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 8)))
+                    if name == "The Descender":
+                        color = (220,220,220)
+                        line1 = item_f.render("The", True, color)
+                        line2 = item_f.render("Descender", True, color)
+                        top_y = item_rect.bottom + 4  # slightly tighter for two lines
+                        cx = item_rect.centerx
+                        screen_surface.blit(line1, line1.get_rect(midtop=(cx, top_y)))
+                        screen_surface.blit(line2, line2.get_rect(midtop=(cx, top_y + line1.get_height() + 2)))
+                    else:
+                        max_name_w = item_w + 16
+                        display_name = ellipsize(name, item_f, max_name_w)
+                        nm = item_f.render(display_name, True, (220,220,220))
+                        screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 8)))
                 except Exception:
                     nm = item_f.render(name, True, (220,220,220))
                     screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 8)))
@@ -982,10 +1060,13 @@ def show_difficulty(snapshot, screen_surface):
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 if easy_r.collidepoint((mx, my)):
+                    set_difficulty("easy")
                     return "easy"
                 if normal_r.collidepoint((mx, my)):
+                    set_difficulty("normal")
                     return "normal"
                 if hard_r.collidepoint((mx, my)):
+                    set_difficulty("hard")
                     return "hard"
 
         # draw
@@ -1042,11 +1123,12 @@ def show_difficulty(snapshot, screen_surface):
         clock_local.tick(60)
 
 def run_menu():
-    global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen
+    global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen, PLAYER_COINS
+    # refresh coins from save at menu start
+    PLAYER_COINS = SAVE.get("coins", PLAYER_COINS)
     clock = pygame.time.Clock()
-    # make fonts a bit smaller
-    title_font = get_font(64)    # reduced from 80
-    button_font = get_font(32)   # reduced from 40
+    title_font = get_font(64)
+    button_font = get_font(32)
 
     # helper to (re)create background and buttons using current SCREEN size
     def create_assets():
@@ -1119,6 +1201,8 @@ def run_menu():
                         import main
                         # pass chosen difficulty into the game
                         main.run_game(SCREEN, difficulty=chosen)
+                        # reload coins after game session (if changed elsewhere)
+                        PLAYER_COINS = SAVE.get("coins", PLAYER_COINS)
                     create_assets()
                 elif buttons[1].is_clicked((mx, my)):
                     try:
@@ -1126,8 +1210,9 @@ def run_menu():
                     except Exception:
                         snap = None
                     res = show_shop(snap, SCREEN)
-                    if res and res[0] == "menu":
-                        return
+                    # sync coins after shop close
+                    PLAYER_COINS = SAVE.get("coins", PLAYER_COINS)
+                    create_assets()
                 elif buttons[2].is_clicked((mx, my)):
                     opt_res = run_options(background)
                     if opt_res and opt_res[0] == "resolution_changed":
@@ -1157,3 +1242,124 @@ def run_menu():
 
         pygame.display.update()
         clock.tick(60)   # limit to 60 FPS
+
+# --- Original code body for show_difficulty, kept for reference / reuse ---
+def _show_difficulty_impl(snapshot, screen_surface):
+    """Modal to pick difficulty. Returns 'easy'|'normal'|'hard' or None if cancelled."""
+    sw, sh = screen_surface.get_size()
+    # make blurred background from snapshot if provided
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
+            bg = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            bg = load_background("Background", (sw, sh))
+    else:
+        bg = load_background("Background", (sw, sh))
+
+    title_f = get_font(44)
+    desc_f = get_font(18)
+    clock_local = pygame.time.Clock()
+
+    # adaptive panel size so things fit on small screens
+    panel_w = min(900, max(520, sw - 160))
+    panel_h = min(420, max(280, int(sh * 0.36)))
+    panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+
+    # horizontal layout for three options
+    padding_x = 36
+    padding_y = 48
+    inner_w = panel_w - padding_x*2
+    spacing = 20
+    btn_w = int((inner_w - spacing*2) / 3)
+    btn_h = 64
+    btn_y = panel.top + padding_y + 40
+
+    left_x = panel.left + padding_x
+    easy_r = pygame.Rect(left_x, btn_y, btn_w, btn_h)
+    normal_r = pygame.Rect(left_x + (btn_w + spacing) * 1, btn_y, btn_w, btn_h)
+    hard_r = pygame.Rect(left_x + (btn_w + spacing) * 2, btn_y, btn_w, btn_h)
+
+    # desired presentation: show heart icons and show XP multiplier as gold under hearts
+    diff_hearts = {"easy": 4, "normal": 3, "hard": 1}
+    diff_xp = {"easy": 0.75, "normal": 1.0, "hard": 2.0}
+    # try to load heart sprite (fallback to a drawn square if missing)
+    heart_img = None
+    try:
+        base = Path(__file__).parent
+        p = base.joinpath("sprites", "heart_1.png")
+        if p.exists():
+            heart_img = pygame.image.load(str(p)).convert_alpha()
+            heart_img = pygame.transform.smoothscale(heart_img, (28, 28))
+    except Exception:
+        heart_img = None
+    if heart_img is None:
+        heart_img = pygame.Surface((28, 28), pygame.SRCALPHA)
+        pygame.draw.polygon(heart_img, (200,50,50), [(14,4),(26,12),(14,26),(2,12)])
+
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                return None
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx,my = ev.pos
+                if easy_r.collidepoint((mx,my)):
+                    set_difficulty("easy"); return "easy"
+                if normal_r.collidepoint((mx,my)):
+                    set_difficulty("normal"); return "normal"
+                if hard_r.collidepoint((mx,my)):
+                    set_difficulty("hard"); return "hard"
+        screen_surface.blit(bg, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,160))
+        screen_surface.blit(overlay, (0,0))
+
+        pygame.draw.rect(screen_surface, (28,28,28), panel)
+        pygame.draw.rect(screen_surface, (140,140,140), panel, 3)
+        title_s = title_f.render("Choose Difficulty", True, (220,220,220))
+        screen_surface.blit(title_s, title_s.get_rect(center=(sw//2, panel.top + 34)))
+
+        # draw buttons
+        pygame.draw.rect(screen_surface, (200,200,200), easy_r)
+        pygame.draw.rect(screen_surface, (200,200,200), normal_r)
+        pygame.draw.rect(screen_surface, (200,200,200), hard_r)
+
+        mouse = pygame.mouse.get_pos()
+        e_col = (0,200,0) if easy_r.collidepoint(mouse) else (0,0,0)
+        n_col = (0,200,0) if normal_r.collidepoint(mouse) else (0,0,0)
+        h_col = (0,200,0) if hard_r.collidepoint(mouse) else (0,0,0)
+
+        screen_surface.blit(desc_f.render("Easy", True, e_col), desc_f.render("Easy", True, e_col).get_rect(center=easy_r.center))
+        screen_surface.blit(desc_f.render("Normal", True, n_col), desc_f.render("Normal", True, n_col).get_rect(center=normal_r.center))
+        screen_surface.blit(desc_f.render("Hard", True, h_col), desc_f.render("Hard", True, h_col).get_rect(center=hard_r.center))
+
+        # render heart icons (centered) and XP multiplier under hearts (gold color)
+        def draw_hearts_and_xp(centerx, count, xp_val):
+            # hearts row
+            spacing_h = 6
+            total_w = count * heart_img.get_width() + max(0, count-1) * spacing_h
+            start_x = int(centerx - total_w / 2)
+            y_hearts = btn_y + btn_h + 8
+            for i in range(count):
+                hx = start_x + i * (heart_img.get_width() + spacing_h)
+                screen_surface.blit(heart_img, (hx, y_hearts))
+            # xp text under hearts (gold)
+            gold = (212, 175, 55)
+            xp_font = get_font(16)
+            xp_s = xp_font.render(f"{xp_val:.2f}x XP", True, gold)
+            screen_surface.blit(xp_s, xp_s.get_rect(center=(centerx, y_hearts + heart_img.get_height() + 14)))
+
+        draw_hearts_and_xp(easy_r.centerx, diff_hearts["easy"], diff_xp["easy"])
+        draw_hearts_and_xp(normal_r.centerx, diff_hearts["normal"], diff_xp["normal"])
+        draw_hearts_and_xp(hard_r.centerx, diff_hearts["hard"], diff_xp["hard"])
+
+        # hint line at bottom
+        hint_f = get_font(14)
+        hint_s = hint_f.render("Press Esc to cancel", True, (160,160,160))
+        screen_surface.blit(hint_s, hint_s.get_rect(center=(sw//2, panel.bottom - 22)))
+
+        pygame.display.update(); clock_local.tick(60)
+
+# --- End of original code body for show_difficulty ---
