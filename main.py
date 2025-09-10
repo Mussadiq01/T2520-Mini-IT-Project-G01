@@ -36,8 +36,15 @@ def _find_play_music():
 
 def _start_play_music():
     global _game_music_started
+    # Allow restart if flag says started but channel is not actually playing
     if _game_music_started:
-        return
+        try:
+            if pygame.mixer.music.get_busy():
+                return  # already playing
+            else:
+                _game_music_started = False  # stale flag, allow restart
+        except Exception:
+            _game_music_started = False
     try:
         path = _find_play_music()
         if path:
@@ -379,6 +386,9 @@ def run_game(screen=None, difficulty: str = "normal"):
     enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
     # preload hit sound (safe if missing)
     try: sounds.preload('HitSound')
+    except Exception: pass
+    # preload damaged sound
+    try: sounds.preload('Damaged')
     except Exception: pass
 
     # --- DEATH PARTICLES SYSTEM ---
@@ -783,6 +793,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
                             # death by lava
+                            try: sounds.play_sfx('Damaged')
+                            except Exception: pass
                             try:
                                 pause.show_death_screen(win)
                             except Exception:
@@ -820,6 +832,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
                         # death by lava
+                        try: sounds.play_sfx('Damaged')
+                        except Exception: pass
                         try:
                             pause.show_death_screen(win)
                         except Exception:
@@ -853,6 +867,8 @@ def run_game(screen=None, difficulty: str = "normal"):
             # only apply trap damage if not in spawn grace
             if spawn_grace_timer <= 0:
                 hearts -= 1
+                try: sounds.play_sfx('Damaged')
+                except Exception: pass
                 invincible_timer = invincible_duration
                 player_flash_timer = player_flash_duration
                 # give player knockback & invincibility when hit by trap
@@ -988,6 +1004,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                     if pdist <= proj_radius:
                         # projectile hit player
                         hearts -= 1
+                        try: sounds.play_sfx('Damaged')
+                        except Exception: pass
                         # knockback away from projectile direction
                         try:
                             vx = p.get('vx', 0.0)
@@ -1029,6 +1047,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                       continue
                  if e.rect().colliderect(player_rect):
                       hearts -= 1
+                      try: sounds.play_sfx('Damaged')
+                      except Exception: pass
                       ecx = e.x + e.size / 2
                       ecy = e.y + e.size / 2
                       pcx = x + char_size / 2
