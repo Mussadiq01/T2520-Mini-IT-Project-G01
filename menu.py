@@ -37,6 +37,9 @@ SCREEN = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.FULLSCREEN)
 pygame.display.set_caption("Descend")
 is_fullscreen = True
 
+# player currency shown in shop (from other code)
+PLAYER_COINS = 10000
+
 # Font helper
 def get_font(size):
     # try to load a font file called "font" from the sprites folder (font.ttf / font.otf)
@@ -346,17 +349,33 @@ def show_shop(snapshot, screen_surface):
         blurred = load_background("Background", (sw, sh))
 
     title_f = get_font(44)
-    item_f = get_font(18)
+    item_f = get_font(16)
     btn_f = get_font(20)
     clock_local = pygame.time.Clock()
+
+    # load coin icon for top-right panel and set coins value
+    base = Path(__file__).parent
+    coin_img = None
+    try:
+        p = base.joinpath("sprites", "coin.png")
+        if p.exists():
+            coin_img = pygame.image.load(str(p)).convert_alpha()
+            coin_img = pygame.transform.smoothscale(coin_img, (36, 36))
+    except Exception:
+        coin_img = None
+    if coin_img is None:
+        coin_img = pygame.Surface((36, 36), pygame.SRCALPHA)
+        pygame.draw.circle(coin_img, (212, 175, 55), (18, 18), 16)
+
+    coins = PLAYER_COINS
 
     # per-item descriptions (unique for each item) - make available for resolver
     weapons_desc = {
         "Sword": "A sharp blade for close combat.",
-        "Hammer": "Delivers heavy blunt damage; great vs armored foes.",
-        "Axe": "Heavy hitter with slow speed.",
-        "Dagger": "Fast but weaker melee weapon.",
-        "Spear": "Long reach polearm, good for spacing."
+        "Mallet": "A heavy mallet that stuns enemies.",
+        "Dagger": "Fast and precise, ideal for quick strikes.",
+        "Katana": "A finely balanced blade with reach and speed.",
+        "The Descender": "A mysterious, powerful blade favored by champions."
     }
 
     # armors are materials (not specific pieces) — descriptions describe material properties
@@ -368,13 +387,16 @@ def show_shop(snapshot, screen_surface):
         "Leather": "Flexible and light; eases movement."
     }
 
-    # items (placeholder names now include distinct types so each can have its own description)
-    weapons = ["Sword", "Hammer", "Axe", "Dagger", "Spear"]
-    armors = ["Wood", "Iron", "Diamond", "Gold", "Leather"]
+    # items (placeholders)
+    weapons = ["Sword", "Mallet", "Dagger", "Katana", "The Descender"]
+    armors = ["Armor 1", "Armor 2", "Armor 3", "Armor 4", "Armor 5"]
 
     # purchased / inventory state persists while shop is open (can be saved later)
-    weapons_purchased = set()
+    # First weapon (Sword) is already unlocked
+    weapons_purchased = set(["Sword"])
     armors_purchased = set()
+    # track per-weapon upgrade levels (0..3)
+    weapons_upgrades = {name: 0 for name in weapons}
 
     # small helper to resolve a textual description for an item name consistently
     def resolve_desc(item_name: str) -> str:
@@ -469,20 +491,28 @@ def show_shop(snapshot, screen_surface):
                         if buy_rect.collidepoint((mx2,my2)):
                             # mark as purchased — persist to outer shop state
                             purchased = True
-                            if "Sword" in item_name:
+                            # add to the correct purchased set depending on which list contains the item
+                            try:
+                                if item_name in weapons:
+                                    weapons_purchased.add(item_name)
+                                elif item_name in armors:
+                                    armors_purchased.add(item_name)
+                            except Exception:
+                                # fallback: treat as weapon
                                 weapons_purchased.add(item_name)
-                            else:
-                                armors_purchased.add(item_name)
                         elif back_rect.collidepoint((mx2,my2)):
                             return ("back", None)
                     else:
                         # after purchase show Equip / Upgrade buttons (handled below) — clicks return action
                         if equip_rect.collidepoint((mx2,my2)):
                             # ensure equipped items are considered purchased as well
-                            if "Sword" in item_name:
+                            try:
+                                if item_name in weapons:
+                                    weapons_purchased.add(item_name)
+                                elif item_name in armors:
+                                    armors_purchased.add(item_name)
+                            except Exception:
                                 weapons_purchased.add(item_name)
-                            else:
-                                armors_purchased.add(item_name)
                             return ("equip", item_name)
                         if upgrade_rect.collidepoint((mx2,my2)):
                             return ("upgrade", item_name)
@@ -538,9 +568,19 @@ def show_shop(snapshot, screen_surface):
                 pygame.draw.rect(screen_surface, (200,200,200), equip_rect)
                 pygame.draw.rect(screen_surface, (200,200,200), upgrade_rect)
                 eq_col = (0,200,0) if equip_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
-                up_col = (0,200,0) if upgrade_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+
+                # determine current upgrade level (weapons only)
+                cur_level = weapons_upgrades.get(item_name, 0) if item_name in weapons_upgrades else 0
+                # Upgrade button label and enabled state
+                if cur_level >= 3:
+                    up_label = "Max"
+                    up_col = (80,80,80)
+                else:
+                    up_label = "Upgrade"
+                    up_col = (0,200,0) if upgrade_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+
                 screen_surface.blit(small_font.render("Equip", True, eq_col), small_font.render("Equip", True, eq_col).get_rect(center=equip_rect.center))
-                screen_surface.blit(small_font.render("Upgrade", True, up_col), small_font.render("Upgrade", True, up_col).get_rect(center=upgrade_rect.center))
+                screen_surface.blit(small_font.render(up_label, True, up_col), small_font.render(up_label, True, up_col).get_rect(center=upgrade_rect.center))
 
             # Back button (always present)
             pygame.draw.rect(screen_surface, (200,200,200), back_rect)
@@ -549,55 +589,37 @@ def show_shop(snapshot, screen_surface):
 
             pygame.display.update()
 
-    # items (placeholders)
-    weapons = ["Sword", "Hammer", "Axe", "Dagger", "Spear"]
-    armors = ["Wood", "Iron", "Diamond", "Gold", "Leather"]
-    # per-item descriptions (unique for each item)
-    weapons_desc = {
-        "Sword": "A sharp blade for close combat.",
-        "Hammer": "Delivers heavy blunt damage; great vs armored foes.",
-        "Axe": "Heavy hitter with slow speed.",
-        "Dagger": "Fast but weaker melee weapon.",
-        "Spear": "Long reach polearm, good for spacing."
+    # load weapon images for each weapon (use project sprites when available)
+    weapons_imgs = {}
+    img_size = 96
+    _img_map = {
+        "Sword": "sword_pic.png",
+        "Mallet": "mallet_pic.png",
+        "Dagger": "dagger_pic.png",
+        "Katana": "katana_pic.png",
+        "The Descender": "the_descender_pic.png",
     }
-
-    armors_desc = {
-        "Wood": "Light material, offers minimal protection.",
-        "Iron": "Reliable material with balanced protection.",
-        "Diamond": "Exceptional durability and high protection.",
-        "Gold": "Soft but flashy; low protection, high weight.",
-        "Leather": "Flexible and light; eases movement."
-    }
-    # purchased / inventory state persists while shop is open (can be saved later)
-    weapons_purchased = set()
-    armors_purchased = set()
-
-    # small helper to resolve a textual description for an item name consistently
-    def resolve_desc(item_name: str) -> str:
-        # prefer exact mapping first
-        if item_name in weapons_desc:
-            return weapons_desc[item_name]
-        if item_name in armors_desc:
-            return armors_desc[item_name]
-        # try substring matches (e.g. "Sword 1" -> "Sword")
-        for k, v in weapons_desc.items():
-            if k and k in item_name:
-                return v
-        for k, v in armors_desc.items():
-            if k and k in item_name:
-                return v
-        # fallback heuristic (keeps preview/modal consistent)
-        if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name:
-            return "A sharp blade. Effective at close range."
-        if "Armor" in item_name or "Chestplate" in item_name or "Helmet" in item_name or "Shield" in item_name or "Boots" in item_name or "Greaves" in item_name:
-            return "Protective gear. Reduces incoming damage."
-        return "A reliable item."
+    base = Path(__file__).parent
+    for wname, fname in _img_map.items():
+        try:
+            p = base.joinpath("sprites", fname)
+            if p.exists():
+                img = pygame.image.load(str(p)).convert_alpha()
+                img = pygame.transform.smoothscale(img, (img_size, img_size))
+                weapons_imgs[wname] = img
+        except Exception:
+            pass
+    # generic fallback graphic for missing images
+    generic_img = pygame.Surface((img_size, img_size), pygame.SRCALPHA)
+    pygame.draw.polygon(generic_img, (200,200,200), [(8,img_size-8),(img_size//2,8),(img_size-8,img_size-8)])
+    for name in weapons:
+        weapons_imgs.setdefault(name, generic_img)
 
     # load placeholder image
     base = Path(__file__).parent
     sword_img = None
     try:
-        p = base.joinpath("sprites", "sword.png")
+        p = base.joinpath("sprites", "armor_pic.png")
         if p.exists():
             sword_img = pygame.image.load(str(p)).convert_alpha()
             sword_img = pygame.transform.smoothscale(sword_img, (96, 96))
@@ -617,16 +639,67 @@ def show_shop(snapshot, screen_surface):
     # equipped indices (None == nothing equipped)
     weapons_equipped = None
     armors_equipped = None
-    row_gap = 200
+    row_gap = 220
     margin_x = 120
     item_w = 120
-    spacing = 20
+    spacing = 40
 
     back_rect = pygame.Rect((sw//2 - 100, sh - 120, 200, 56))
 
     # bigger arrows, centered vertically relative to item box
     arrow_w = 64
     arrow_h = 64
+
+    # Helper: compact text with ellipsis to fit width
+    def ellipsize(text: str, font: pygame.font.Font, max_w: int) -> str:
+        try:
+            if font.size(text)[0] <= max_w:
+                return text
+        except Exception:
+            return text
+        ell = '...'
+        lo, hi = 0, len(text)
+        best = text
+        while lo < hi:
+            mid = (lo + hi) // 2
+            cand = text[:mid].rstrip() + ell
+            try:
+                if font.size(cand)[0] <= max_w:
+                    best = cand
+                    lo = mid + 1
+                else:
+                    hi = mid
+            except Exception:
+                break
+        return best
+
+    # Helper: wrap item names into up to two centered lines within max width
+    def wrap_name_lines(text: str, font: pygame.font.Font, max_w: int, max_lines: int = 2):
+        words = (text or "").split()
+        if not words:
+            return [""]
+        lines = []
+        i = 0
+        while i < len(words) and len(lines) < max_lines:
+            cur = words[i]
+            i += 1
+            while i < len(words):
+                test = cur + " " + words[i]
+                try:
+                    fits = font.size(test)[0] <= max_w
+                except Exception:
+                    fits = True
+                if fits:
+                    cur = test
+                    i += 1
+                else:
+                    break
+            lines.append(cur)
+            if len(lines) == max_lines and i < len(words):
+                rest = " ".join([lines[-1]] + words[i:])
+                lines[-1] = ellipsize(rest, font, max_w)
+                break
+        return lines
 
     while True:
         # reset click state each frame so old clicks don't persist
@@ -678,6 +751,20 @@ def show_shop(snapshot, screen_surface):
         overlay.fill((0,0,0,140))
         screen_surface.blit(overlay, (0,0))
 
+        # draw coin panel in the top-right corner
+        coin_panel = pygame.Rect(sw - 220, 12, 200, 48)
+        try:
+            pygame.draw.rect(screen_surface, (40,40,40), coin_panel)
+            pygame.draw.rect(screen_surface, (120,120,120), coin_panel, 2)
+            # blit coin image at left side of the panel
+            screen_surface.blit(coin_img, (coin_panel.left + 8, coin_panel.top + (coin_panel.height - coin_img.get_height())//2))
+            coin_font = get_font(20)
+            coin_surf = coin_font.render(f"{coins}", True, (212,175,55))
+            screen_surface.blit(coin_surf, coin_surf.get_rect(midleft=(coin_panel.left + 56, coin_panel.centery)))
+        except Exception:
+            # defensive: ignore coin panel drawing errors
+            pass
+
         panel_w, panel_h = sw - 160, sh - 160
         panel = pygame.Rect((80, 80, panel_w, panel_h))
         pygame.draw.rect(screen_surface, (30,30,30), panel)
@@ -719,10 +806,44 @@ def show_shop(snapshot, screen_surface):
              # only draw if visible
             if item_rect.right >= panel.left + 10 and item_rect.left <= panel.right - 10:
                 pygame.draw.rect(screen_surface, (50,50,50), item_rect)
-                screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
-                nm = item_f.render(name, True, (220,220,220))
-                nm_rect = nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 6))  # draw name below box
-                screen_surface.blit(nm, nm_rect)
+                img = weapons_imgs.get(name, sword_img)
+                try:
+                    screen_surface.blit(img, img.get_rect(center=item_rect.center))
+                except Exception:
+                    screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
+                # Draw name in up to two lines
+                try:
+                    max_name_w = item_w + 16
+                    name_lines = wrap_name_lines(name, item_f, max_name_w, 2)
+                    line_h = item_f.get_linesize()
+                    start_y = item_rect.bottom + 6
+                    for j, line in enumerate(name_lines):
+                        nm = item_f.render(line, True, (220,220,220))
+                        screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, start_y + j * (line_h + 2))))
+                except Exception:
+                    nm = item_f.render(name, True, (220,220,220))
+                    screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 8)))
+
+                # show upgrade level if purchased
+                lvl = weapons_upgrades.get(name, 0)
+                try:
+                    lvl_font = get_font(12)
+                    lvl_text = lvl_font.render(f"Lv {lvl}", True, (200,200,120))
+                    screen_surface.blit(lvl_text, (item_rect.right - lvl_text.get_width() - 6, item_rect.top + 6))
+                except Exception:
+                    pass
+
+                # dim/lock overlay for items not purchased
+                if name not in weapons_purchased:
+                    try:
+                        lock_s = pygame.Surface((item_rect.width, item_rect.height), pygame.SRCALPHA)
+                        lock_s.fill((0,0,0,160))
+                        screen_surface.blit(lock_s, item_rect.topleft)
+                        lock_font = get_font(14)
+                        lock_surf = lock_font.render("Locked", True, (180,80,80))
+                        screen_surface.blit(lock_surf, lock_surf.get_rect(center=item_rect.center))
+                    except Exception:
+                        pygame.draw.rect(screen_surface, (30,30,30), item_rect)
 
              # outline equipped (green) always; outline focused selection (gold) only when row focused
             if weapons_equipped == i:
@@ -749,13 +870,20 @@ def show_shop(snapshot, screen_surface):
                         focused_row = "weapons"
                         # open item detail page
                         try:
-                            res = show_item_page(weapons[i], sword_img)
+                            res = show_item_page(weapons[i], weapons_imgs.get(weapons[i], sword_img))
                             # persist purchase/equip if requested
                             if res and res[0] == "equip":
                                 weapons_purchased.add(res[1])
                                 try:
                                     idx = weapons.index(res[1])
                                     weapons_equipped = idx
+                                except Exception:
+                                    pass
+                            # handle upgrade action
+                            if res and res[0] == "upgrade":
+                                try:
+                                    cur = weapons_upgrades.get(res[1], 0)
+                                    weapons_upgrades[res[1]] = min(3, cur + 1)
                                 except Exception:
                                     pass
                         except Exception:
@@ -791,9 +919,19 @@ def show_shop(snapshot, screen_surface):
             if item_rect.right >= panel.left + 10 and item_rect.left <= panel.right - 10:
                 pygame.draw.rect(screen_surface, (50,50,50), item_rect)
                 screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
-                nm = item_f.render(name, True, (220,220,220))
-                nm_rect = nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 6))
-                screen_surface.blit(nm, nm_rect)
+                # Draw armor name in up to two lines
+                try:
+                    max_name_w = item_w + 16
+                    name_lines = wrap_name_lines(name, item_f, max_name_w, 2)
+                    line_h = item_f.get_linesize()
+                    start_y = item_rect.bottom + 6
+                    for j, line in enumerate(name_lines):
+                        nm = item_f.render(line, True, (220,220,220))
+                        screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, start_y + j * (line_h + 2))))
+                except Exception:
+                    nm = item_f.render(name, True, (220,220,220))
+                    nm_rect = nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 6))
+                    screen_surface.blit(nm, nm_rect)
 
             # outline equipped (green) always; outline focused selection (gold) only when focused
             if armors_equipped == i:
@@ -1031,7 +1169,7 @@ def show_difficulty(snapshot, screen_surface):
             # xp text under hearts (gold)
             gold = (212, 175, 55)
             xp_font = get_font(16)
-            xp_s = xp_font.render(f"{xp_val:.2f}x XP", True, gold)
+            xp_s = xp_font.render(f"{xp_val:.2f}x Points", True, gold)
             screen_surface.blit(xp_s, xp_s.get_rect(center=(centerx, y_hearts + heart_img.get_height() + 14)))
 
         draw_hearts_and_xp(easy_r.centerx, diff_hearts["easy"], diff_xp["easy"])
