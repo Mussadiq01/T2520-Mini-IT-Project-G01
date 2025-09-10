@@ -4,6 +4,9 @@ import math
 import os
 import random
 from pathlib import Path
+from enemies import spawn_enemies, Enemy  # added: import enemy helpers
+import pause  # NEW: pause + death screens
+import powerups  # NEW: powerup selection UI
 
 BASE_DIR = Path(__file__).parent
 def asset_path(*parts):
@@ -12,22 +15,21 @@ def asset_path(*parts):
 # ======================
 # GAME LOOP
 # ======================
-def run_game(screen=None):
-    """
-    If 'screen' is None, create a fullscreen display (legacy behavior).
-    If a pygame Surface is provided in 'screen', use it and do NOT call set_mode()
-    (prevents changing the system display/resolution when launched from the menu).
-    """
+def run_game(screen=None, difficulty: str = "normal"):
+    """Run the game loop. If `screen` (a pygame Surface / display) is provided the game will use it
+       instead of creating a new fullscreen window — this allows returning to the menu cleanly."""
     # --- Common init ---
-    clock = pygame.time.Clock()
+    created_display = False
     if screen is None:
         pygame.init()
         screen_info = pygame.display.Info()
         win = pygame.display.set_mode((screen_info.current_w, screen_info.current_h), pygame.FULLSCREEN)
         pygame.display.set_caption("Walking Character + Map")
+        created_display = True
     else:
-        # use the provided surface (do not recreate display)
+        # reuse the provided display surface (menu's SCREEN)
         win = screen
+    clock = pygame.time.Clock()
 
     # ======================
     # MAP DATA AND LOADER
@@ -106,12 +108,33 @@ def run_game(screen=None):
     # Sword sprite
     sword_img = load_sprite("sword.png", size=48)
     attack_duration = 250  # ms swing
-    attack_cooldown = 600  # ms cooldown after swing
+    attack_cooldown = 300  # ms cooldown after swing
     attacking = False
     attack_timer = 0
     cooldown_timer = 0
     swing_start_angle = 0
     swing_arc = 120  # degrees of swing
+    sword_damage = 5
+    attack_hits = set()  # track enemies hit this swing (store id(enemy))
+    # Poison level from powerups (stacks)
+    poison_level = 0
+
+    # --- SHIELD POWERUP STATE ---
+    shield_count = 0
+    shield_angle = 0.0
+    shield_img = load_sprite("shield.png", size=48)
+    if shield_img is None:
+        shield_img = pygame.Surface((48, 48), pygame.SRCALPHA)
+        pygame.draw.circle(shield_img, (0, 255, 255), (24, 24), 20)  # Cyan circle as fallback
+    shield_radius = 64  # distance from player center
+    shield_stun_duration = 500  # ms
+
+    # Stun indicator sprite (native size)
+    try:
+        stunned_img = pygame.image.load(asset_path("sprites", "stunned.png")).convert_alpha()
+    except Exception:
+        # fallback to scaled loader if native load fails
+        stunned_img = load_sprite("stunned.png", size=48)
 
     # Trap sprites
     trap_off_img = load_sprite("trap_off.png")
@@ -267,6 +290,176 @@ def run_game(screen=None):
     x = offset_x + (WIDTH // 2) * TILE_SIZE
     y = offset_y + 1 * TILE_SIZE
 
+    # --- SHOW POWERUP SELECTION BEFORE THE ROUND STARTS ---
+    # record any chooser elapsed time so we can restore spawn grace later when it's initialized
+    chooser_elapsed_pending = 0
+    try:
+        snap = win.copy()
+    except Exception:
+        snap = None
+    try:
+        pick, elapsed_ms = powerups.choose_powerup(snap, win)
+        chooser_elapsed_pending = int(elapsed_ms or 0)
+        # apply powerup effects
+        if pick:
+            ptype = str(pick.get("type", "")).lower()
+            if ptype == "damage":
+                sword_damage += int(pick.get("amount", 0))
+            elif ptype == "attackspeed":
+                try:
+                    amt = float(pick.get("amount", 0.2))
+                    # reduce attack cooldown by percentage (e.g. 0.2 -> 20%)
+                    attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                except Exception:
+                    pass
+            elif ptype == "dashspeed":
+                try:
+                    amt = float(pick.get("amount", 0.2))
+                    # reduce dash cooldown (time to recover stamina) by `amt` percent.
+                    # stamina_regen_rate is in units per second; to shorten time by amt, multiply by 1/(1-amt).
+                    if stamina_regen_rate > 0:
+                        stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
+                except Exception:
+                    pass
+            elif ptype == "speed":
+                try:
+                    walk_mult = float(pick.get("walk_mult", 0.25))
+                    dash_mult = float(pick.get("dash_mult", 0.20))
+                    vel = vel * (1.0 + walk_mult)
+                    dash_speed = dash_speed * (1.0 + dash_mult)
+                except Exception:
+                    pass
+            elif ptype == "shield":
+                shield_count += int(pick.get("amount", 1))
+            elif ptype == "poison":
+                try:
+                    poison_level += int(pick.get("amount", 1))
+                except Exception:
+                    poison_level += 1
+    except Exception:
+        chooser_elapsed_pending = 0
+
+    # spawn enemies
+    enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+
+    # --- DEATH PARTICLES SYSTEM ---
+    # Each particle: {'x','y','vx','vy','size','color',(optional) 'life_ms'}
+    death_particles = []
+
+    def spawn_death_particles(enemy: Enemy, count: int = None):
+        """Spawn pixel debris from an enemy's current sprite. If sprite pixels are transparent skip them."""
+        # choose a surface to sample pixels from (prefer current facing frame)
+        surf = None
+        try:
+            if enemy.sprites:
+                if isinstance(enemy.sprites, dict):
+                    frames = enemy.sprites.get(enemy.facing) or enemy.sprites.get("idle") or []
+                else:
+                    frames = list(enemy.sprites)
+                if frames:
+                    surf = frames[0]
+        except Exception:
+            surf = None
+        # fallback small solid surface
+        if surf is None:
+            surf = pygame.Surface((enemy.size, enemy.size), pygame.SRCALPHA)
+            surf.fill((180, 60, 60))
+
+        surf_w, surf_h = surf.get_size()
+        # number of particles proportional to enemy area (clamped)
+        if count is None:
+            count = max(8, min(40, (enemy.size * enemy.size) // 64))
+
+        for _ in range(count):
+            # pick a random pixel within sprite; skip transparent pixels up to a few tries
+            col = None
+            for _try in range(6):
+                sx = random.randint(0, surf_w - 1)
+                sy = random.randint(0, surf_h - 1)
+                try:
+                    c = surf.get_at((sx, sy))
+                except Exception:
+                    c = pygame.Color(200, 60, 60, 255)
+                # skip fully transparent pixels
+                if getattr(c, "a", 255) == 0:
+                    continue
+                # FORCE OPAQUE: ignore any source alpha, use full opacity
+                col = (c.r, c.g, c.b, 255)
+                break
+            if col is None:
+                col = (180, 60, 60, 255)
+
+            # world position: enemy top-left + sampled pixel offset
+            px = enemy.x + (sx if 'sx' in locals() else enemy.size//2)
+            py = enemy.y + (sy if 'sy' in locals() else enemy.size//2)
+
+            # initial velocity: scatter outward and upward a bit
+            vx = random.uniform(-1.8, 1.8) * (1.0 + enemy.size / 48.0)
+            vy = random.uniform(-3.5, -1.0) * (1.0 + enemy.size / 48.0)
+
+            death_particles.append({
+                'x': px,
+                'y': py,
+                'vx': vx,
+                'vy': vy,
+                'size': max(2, int(enemy.size * 0.12)),
+                'color': col,
+                'life': random.randint(900, 1800)  # ms before fade/remove (kept for potential logic)
+            })
+
+    def update_and_draw_particles(dt: int, surface: pygame.Surface):
+        """Update death_particles physics and draw them. Particles fall under gravity and continue past the bottom of the screen until off-bound."""
+        gravity = 0.9 * (dt / 16.0)
+        screen_h = surface.get_height()
+        # work on a copy so removals are safe
+        for p in list(death_particles):
+            # physics
+            p['vy'] += gravity
+            p['x'] += p['vx'] * (dt / 16.0)
+            p['y'] += p['vy'] * (dt / 16.0)
+
+            # NOTE: DO NOT settle at bottom — allow particles to continue falling off-screen.
+            # lifetime (kept but not used for alpha fade)
+            p['life'] -= dt
+
+            # DRAW OPAQUE: use stored color but force alpha to fully opaque
+            col = p['color'][:3] + (255,)
+            try:
+                rect = pygame.Rect(int(p['x']), int(p['y']), p['size'], p['size'])
+                s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                s.fill(col)
+                surface.blit(s, rect.topleft)
+            except Exception:
+                pass
+
+            # remove when particle has gone off the bottom of the surface (plus a small margin)
+            if p['y'] > screen_h + p['size'] + 50:
+                try:
+                    death_particles.remove(p)
+                except Exception:
+                    pass
+
+    # --- END death particles ---
+
+    # Player damage / invincibility / knockback state
+    invincible_timer = 0                     # ms remaining of invulnerability after taking hit
+    spawn_grace_timer = 1500                 # ms grace period on spawn / map change (1.5s yellow overlay)
+    # If the chooser ran before this point, add back the time it consumed so grace isn't reduced
+    try:
+        spawn_grace_timer += int(chooser_elapsed_pending or 0)
+    except Exception:
+        pass
+    chooser_elapsed_pending = 0
+
+    invincible_duration = 2000    # 2 seconds invincibility after losing a heart (increased)
+    player_kb_vx = 0.0
+    player_kb_vy = 0.0
+    player_kb_time = 0            # ms remaining for knockback
+    player_kb_duration = 200      # duration of knockback in ms
+    # short on-hit red tint for player (independent from full invincibility)
+    player_flash_timer = 0
+    player_flash_duration = 300   # ms red tint when damaged
+
     pressed_dirs = []
     last_direction = "down"
     frame_index = 0
@@ -278,23 +471,55 @@ def run_game(screen=None):
     dash_timer = 0
     dash_dir = (0, 0)
 
-    # initialize values that were referenced before assignment
     current_angle = 0.0
-    # simple initial player_center based on x,y
     player_center = (x + char_size // 2, y + char_size // 2)
 
-    # Heart system
     hearts = 3
-    # 48px hearts, full and empty variants (ensure heart_1.png and heart_0.png exist)
+    # set starting max hearts / XP multiplier by difficulty and initialize current hearts
+    diff_map = {
+        "easy":   (4, 0.75),
+        "normal": (3, 1.0),
+        "hard":   (1, 2.0)
+    }
+    max_hearts, xp_multiplier = diff_map.get(str(difficulty).lower(), (3, 1.0))
+    hearts = max_hearts
+
     heart_full = load_sprite("heart_1.png", size=48)
     heart_empty = load_sprite("heart_0.png", size=48)
     heart_spacing = 0
-     # track whether player was on an active trap in the previous frame
     on_trap_prev = False
 
     run = True
+    # Floating damage indicators (use bundled font if available)
+    dmg_indicators = []  # each: {'x','y','text','color','life','vy'}
+    try:
+        font_path = None
+        for ext in ("ttf", "otf"):
+            cand = asset_path("sprites", f"font.{ext}")
+            if os.path.exists(cand):
+                font_path = cand
+                break
+        dmg_font = pygame.font.Font(font_path, 22) if font_path else pygame.font.SysFont("arial", 22, bold=True)
+    except Exception:
+        dmg_font = None
     while run:
         dt = clock.tick(60)
+
+        # decrement player invincibility & knockback timers
+        if invincible_timer > 0:
+            invincible_timer -= dt
+            if invincible_timer < 0:
+                invincible_timer = 0
+        # decrement spawn grace timer (yellow overlay + damage immunity)
+        if spawn_grace_timer > 0:
+            spawn_grace_timer -= dt
+            if spawn_grace_timer < 0:
+                spawn_grace_timer = 0
+        # decrement player flash timer for red tint
+        if player_flash_timer > 0:
+            player_flash_timer -= dt
+            if player_flash_timer < 0:
+                player_flash_timer = 0
 
         # Update trap timer
         trap_timer += dt
@@ -302,13 +527,12 @@ def run_game(screen=None):
             trap_timer = 0
             trap_active = not trap_active
 
-        # Timers should be updated each frame, not just when events occur
+        # Timers update
         if attacking:
             attack_timer -= dt
             if attack_timer <= 0:
                 attacking = False
                 attack_timer = 0
-
         if cooldown_timer > 0:
             cooldown_timer -= dt
             if cooldown_timer < 0:
@@ -316,40 +540,33 @@ def run_game(screen=None):
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return ("menu", None)
+                return
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                # pause overlay
                 try:
                     snapshot = win.copy()
                 except Exception:
                     snapshot = None
-                action = show_pause_overlay(snapshot, win)
-                if isinstance(action, tuple) and action[0] == "resume":
+                res = pause.show_pause_overlay(snapshot, win)
+                if res and res[0] == "resume":
+                    # simply continue
                     continue
-                if isinstance(action, tuple) and action[0] == "menu":
-                    return ("menu", None)
-                if isinstance(action, tuple) and action[0] == "options":
-                    # open the full options UI from menu.py and apply changes without quitting
-                    import menu
-                    opt_res = menu.show_options(snapshot, win)
-                    if isinstance(opt_res, tuple) and opt_res[0] == "resolution_changed":
-                        new_size = opt_res[1]
-                        # recreate display surface in-place and update local layout
-                        try:
-                            win = pygame.display.set_mode(new_size)
-                        except Exception:
-                            win = screen  # fallback, keep current
-                        screen_width, screen_height = win.get_size()
-                        offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
-                        offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
-
-                        # continue game
-                        continue
-                    # if resume or other, continue the game loop
+                if res and res[0] == "options":
+                    # lazy import menu to open options UI
+                    try:
+                        import menu
+                        opt_res = menu.show_options(snapshot, win)
+                        if opt_res and opt_res[0] == "resolution_changed":
+                            new_size = opt_res[1]
+                            pygame.display.set_mode(new_size)
+                            screen_width, screen_height = win.get_size()
+                            offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
+                            offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
+                    except Exception:
+                        pass
                     continue
-                if isinstance(action, tuple) and action[0] == "shop":
-                    # placeholder for pause->shop
-                    # simply continue for now
-                    continue
+                if res and res[0] == "menu":
+                    return
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_e:
                 game_map, floor_choices = pick_map()
@@ -358,6 +575,53 @@ def run_game(screen=None):
                 pressed_dirs.clear()
                 is_dashing = False
                 frame_index = 0
+                # --- SHOW POWERUP SELECTION AGAIN ON MAP CHANGE ---
+                try:
+                    snap = win.copy()
+                except Exception:
+                    snap = None
+                elapsed_here = 0
+                try:
+                    pick, elapsed_here = powerups.choose_powerup(snap, win)
+                    elapsed_here = int(elapsed_here or 0)
+                    # apply powerup effects
+                    if pick:
+                        ptype = str(pick.get("type", "")).lower()
+                        if ptype == "damage":
+                            sword_damage += int(pick.get("amount", 0))
+                        elif ptype == "attackspeed":
+                            try:
+                                amt = float(pick.get("amount", 0.2))
+                                attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                            except Exception:
+                                pass
+                        elif ptype == "dashspeed":
+                            try:
+                                amt = float(pick.get("amount", 0.2))
+                                if stamina_regen_rate > 0:
+                                    stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
+                            except Exception:
+                                pass
+                        elif ptype == "speed":
+                            try:
+                                walk_mult = float(pick.get("walk_mult", 0.25))
+                                dash_mult = float(pick.get("dash_mult", 0.20))
+                                vel = vel * (1.0 + walk_mult)
+                                dash_speed = dash_speed * (1.0 + dash_mult)
+                            except Exception:
+                                pass
+                        elif ptype == "shield":
+                            shield_count += int(pick.get("amount", 1))
+                        elif ptype == "poison":
+                            try:
+                                poison_level += int(pick.get("amount", 1))
+                            except Exception:
+                                poison_level += 1
+                except Exception:
+                    elapsed_here = 0
+                enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+                # grant temporary grace period after respawn / map change (1.5s) and account for chooser time
+                spawn_grace_timer = 1500 + elapsed_here
 
             if event.type == pygame.KEYDOWN and event.key in key_to_dir:
                 d = key_to_dir[event.key]
@@ -392,35 +656,65 @@ def run_game(screen=None):
                         dy_tmp /= norm
                     dash_dir = (dx_tmp, dy_tmp)
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # left click
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if not attacking and cooldown_timer <= 0:
                     attacking = True
                     attack_timer = attack_duration
                     cooldown_timer = attack_duration + attack_cooldown
-                    # Lock swing start angle toward mouse; compute player center now
                     mx, my = pygame.mouse.get_pos()
                     px = x + char_size // 2
                     py = y + char_size // 2
                     player_center = (px, py)
                     swing_start_angle = math.degrees(math.atan2(my - py, mx - px))
+                    attack_hits.clear()
+
+        # --- APPLY PLAYER KNOCKBACK (if active) ---
+        knocked = False
+        if player_kb_time > 0:
+            knocked = True
+            frac = min(dt, player_kb_time) / float(max(1, player_kb_duration))
+            dx_k = player_kb_vx * frac
+            dy_k = player_kb_vy * frac
+            new_x = x + dx_k
+            new_y = y + dy_k
+            try:
+                if can_move(new_x, new_y, game_map, dashing=False):
+                    x, y = new_x, new_y
+                else:
+                    if can_move(x + dx_k, y, game_map, dashing=False):
+                        x += dx_k
+                    elif can_move(x, y + dy_k, game_map, dashing=False):
+                        y += dy_k
+                    else:
+                        player_kb_vx = player_kb_vy = 0.0
+                        player_kb_time = 0
+            except Exception:
+                x, y = new_x, new_y
+            player_kb_time -= dt
+            if player_kb_time <= 0:
+                player_kb_vx = player_kb_vy = 0.0
+                player_kb_time = 0
 
         dx, dy = 0, 0
         if is_dashing:
             dx, dy = dash_dir
         else:
             keys = pygame.key.get_pressed()
-            if "left" in pressed_dirs and keys[pygame.K_a]:
-                dx -= 1
-            if "right" in pressed_dirs and keys[pygame.K_d]:
-                dx += 1
-            if "up" in pressed_dirs and keys[pygame.K_w]:
-                dy -= 1
-            if "down" in pressed_dirs and keys[pygame.K_s]:
-                dy += 1
-            if dx != 0 and dy != 0:
-                norm = math.sqrt(dx*dx + dy*dy)
-                dx /= norm
-                dy /= norm
+            if knocked:
+                dx = dy = 0
+            else:
+                if "left" in pressed_dirs and keys[pygame.K_a]:
+                    dx -= 1
+                if "right" in pressed_dirs and keys[pygame.K_d]:
+                    dx += 1
+                if "up" in pressed_dirs and keys[pygame.K_w]:
+                    dy -= 1
+                if "down" in pressed_dirs and keys[pygame.K_s]:
+                    dy += 1
+                if dx != 0 and dy != 0:
+                    norm = math.sqrt(dx*dx + dy*dy)
+                    dx /= norm
+                    dy /= norm
 
         moving = dx != 0 or dy != 0
 
@@ -429,22 +723,26 @@ def run_game(screen=None):
             speed = dash_speed
             dash_timer -= dt
             if dash_timer <= 0:
-                # check for lava under feet after dash ends
                 foot_width = char_size // 2
                 foot_height = 10
                 foot_x = x + (char_size - foot_width) // 2
                 foot_y = y + char_size - foot_height
                 foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
-                for px, py in [
+                for pxp, pyp in [
                     (foot_rect.left, foot_rect.bottom - 1),
                     (foot_rect.right - 1, foot_rect.bottom - 1),
                     (foot_rect.centerx, foot_rect.bottom - 1)
                 ]:
-                    tile_x = int((px - offset_x) // TILE_SIZE)
-                    tile_y = int((py - offset_y) // TILE_SIZE)
+                    tile_x = int((pxp - offset_x) // TILE_SIZE)
+                    tile_y = int((pyp - offset_y) // TILE_SIZE)
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
-                            return ("menu", None)
+                            # death by lava
+                            try:
+                                pause.show_death_screen(win)
+                            except Exception:
+                                pass
+                            return
                 is_dashing = False
                 if pressed_dirs:
                     last_direction = pressed_dirs[-1]
@@ -460,53 +758,71 @@ def run_game(screen=None):
             elif can_move(x, y + dy * speed, game_map, is_dashing):
                 y += dy * speed
 
+        # dash end / lava check: when dash_timer expires, validate player isn't standing on lava and stop dashing
         if is_dashing and dash_timer <= 0:
-            # check for lava under feet after dash ends
             foot_width = char_size // 2
             foot_height = 10
             foot_x = x + (char_size - foot_width) // 2
             foot_y = y + char_size - foot_height
             foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
-            for px, py in [
+            for pxp, pyp in [
                 (foot_rect.left, foot_rect.bottom - 1),
                 (foot_rect.right - 1, foot_rect.bottom - 1),
                 (foot_rect.centerx, foot_rect.bottom - 1)
             ]:
-                tile_x = int((px - offset_x) // TILE_SIZE)
-                tile_y = int((py - offset_y) // TILE_SIZE)
+                tile_x = int((pxp - offset_x) // TILE_SIZE)
+                tile_y = int((pyp - offset_y) // TILE_SIZE)
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
-                        return ("menu", None)
+                        # death by lava
+                        try:
+                            pause.show_death_screen(win)
+                        except Exception:
+                            pass
+                        return
             is_dashing = False
             if pressed_dirs:
                 last_direction = pressed_dirs[-1]
 
-        # Always check traps (not just after dash)
+        # Always check traps
         foot_width = char_size // 2
         foot_height = 10
         foot_x = x + (char_size - foot_width) // 2
         foot_y = y + char_size - foot_height
         foot_rect = pygame.Rect(foot_x, foot_y, foot_width, foot_height)
 
-        # determine if any foot point is on an active trap this frame
         on_trap_now = False
-        for px, py in [
+        for pxp, pyp in [
             (foot_rect.left, foot_rect.bottom - 1),
             (foot_rect.right - 1, foot_rect.bottom - 1),
             (foot_rect.centerx, foot_rect.bottom - 1)
         ]:
-            tile_x = int((px - offset_x) // TILE_SIZE)
-            tile_y = int((py - offset_y) // TILE_SIZE)
+            tile_x = int((pxp - offset_x) // TILE_SIZE)
+            tile_y = int((pyp - offset_y) // TILE_SIZE)
             if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                 if game_map[tile_y][tile_x] == TRAP_TILE and trap_active:
                     on_trap_now = True
                     break
 
-        # only apply damage when transitioning from NOT on an active trap to ON an active trap
         if on_trap_now and not on_trap_prev:
-            hearts -= 1
-            if hearts <= 0:
-                return ("menu", None)
+            # only apply trap damage if not in spawn grace
+            if spawn_grace_timer <= 0:
+                hearts -= 1
+                invincible_timer = invincible_duration
+                player_flash_timer = player_flash_duration
+                # give player knockback & invincibility when hit by trap
+                pcx = x + char_size / 2
+                pcy = y + char_size / 2
+                # reduced upward knockback
+                player_kb_vx = 0.0
+                player_kb_vy = -20.0
+                player_kb_time = player_kb_duration
+                if hearts <= 0:
+                    try:
+                        pause.show_death_screen(win)
+                    except Exception:
+                        pass
+                    return
 
         on_trap_prev = on_trap_now
 
@@ -523,27 +839,273 @@ def run_game(screen=None):
         else:
             frame_index = 0
 
-        # Use current_angle only after initialization (we initialized it above)
-        angle = int(current_angle) // 3 * 3  # snap to nearest 3°
-        # rotated_sword = sword_rotations[angle]  # not used directly here
+        angle = int(current_angle) // 3 * 3
 
         win.fill((0, 0, 0))
         draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
-
-        # Draw shadow first (under character)
         draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
+        # draw/update death particle debris (map-grounded)
+        update_and_draw_particles(dt, win)
+        # Floating damage indicators: update and draw
+        try:
+            pruned = []
+            for ind in dmg_indicators:
+                ind['life'] -= dt
+                ind['y'] += ind['vy'] * dt
+                if ind['life'] > 0 and dmg_font is not None:
+                    # fade alpha near the end
+                    a = 255
+                    if ind['life'] < 200:
+                        a = max(0, int(255 * (ind['life'] / 200.0)))
+                    # composite outlined text
+                    outline_w = 2
+                    base = dmg_font.render(ind['text'], True, ind['color'])
+                    outline = dmg_font.render(ind['text'], True, (0, 0, 0))
+                    w = base.get_width() + outline_w * 2
+                    h = base.get_height() + outline_w * 2
+                    comp = pygame.Surface((w, h), pygame.SRCALPHA)
+                    for ox, oy in [(-outline_w, 0), (outline_w, 0), (0, -outline_w), (0, outline_w),
+                                   (-outline_w, -outline_w), (outline_w, -outline_w), (-outline_w, outline_w), (outline_w, outline_w)]:
+                        comp.blit(outline, (ox + outline_w, oy + outline_w))
+                    comp.blit(base, (outline_w, outline_w))
+                    if a < 255:
+                        comp.set_alpha(a)
+                    win.blit(comp, (int(ind['x'] - comp.get_width() / 2), int(ind['y'])))
+                if ind['life'] > 0:
+                    pruned.append(ind)
+            dmg_indicators = pruned
+        except Exception:
+            pass
+
+        def make_is_walkable(size):
+            def is_walkable(new_x: float, new_y: float) -> bool:
+                foot_width = int(size * 0.5)
+                foot_height = 10
+                foot_x = int(new_x + (size - foot_width) / 2)
+                foot_y = int(new_y + size - foot_height)
+                for pxp, pyp in [
+                    (foot_x, foot_y + foot_height - 1),
+                    (foot_x + foot_width - 1, foot_y + foot_height - 1),
+                    (foot_x + foot_width // 2, foot_y + foot_height - 1)
+                ]:
+                    tile_x = int((pxp - offset_x) // TILE_SIZE)
+                    tile_y = int((pyp - offset_y) // TILE_SIZE)
+                    if tile_x < 0 or tile_x >= WIDTH or tile_y < 0 or tile_y >= HEIGHT:
+                        return False
+                    tile = game_map[tile_y][tile_x]
+                    if tile in WALL_TILES:
+                        return False
+                    if tile == LAVA_TILE:
+                        return False
+                return True
+            return is_walkable
+
+        def on_trap(px: int, py: int) -> bool:
+            tile_x = int((px - offset_x) // TILE_SIZE)
+            tile_y = int((py - offset_y) // TILE_SIZE)
+            if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
+                return game_map[tile_y][tile_x] == TRAP_TILE and trap_active
+            return False
+
+        def is_lava(px: float, py: float) -> bool:
+            tile_x = int((px - offset_x) // TILE_SIZE)
+            tile_y = int((py - offset_y) // TILE_SIZE)
+            if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
+                return game_map[tile_y][tile_x] == LAVA_TILE
+            return False
+
+        # new: wall test used by enemy projectiles (True for wall tiles or out-of-bounds)
+        def is_wall(px: float, py: float) -> bool:
+            tile_x = int((px - offset_x) // TILE_SIZE)
+            tile_y = int((py - offset_y) // TILE_SIZE)
+            # treat out-of-bounds as a blocking wall so projectiles disappear there
+            if tile_x < 0 or tile_x >= WIDTH or tile_y < 0 or tile_y >= HEIGHT:
+                return True
+            return game_map[tile_y][tile_x] in WALL_TILES
+
+        # Update enemies
+        for e in enemies:
+            if e.alive:
+                # pass callbacks; per-enemy view logic lives inside Enemy.update
+                e.update(dt, player_center, make_is_walkable(e.size), on_trap, is_lava, is_wall)
+        # Collect damage events from enemies after update
+        for e in enemies:
+            try:
+                for ev in e.drain_damage_events():
+                    dmg_indicators.append({
+                        'x': float(ev.get('x', getattr(e, 'x', 0) + getattr(e, 'size', 0) / 2)),
+                        'y': float(ev.get('y', getattr(e, 'y', 0))),
+                        'text': f"-{int(ev.get('amt', 0))}",
+                        'color': tuple(ev.get('color', (200, 40, 40))),
+                        'life': 600,
+                        'vy': -0.04
+                    })
+            except Exception:
+                pass
+        # spawn particles for enemies that died THIS FRAME
+        for e in enemies:
+            if (not e.alive) and getattr(e, "_died_this_frame", False):
+                try:
+                    spawn_death_particles(e)
+                except Exception:
+                    pass
+                # clear the marker so we only spawn once
+                try:
+                    e._died_this_frame = False
+                except Exception:
+                    pass
+
+        # Draw enemies
+        for e in enemies:
+            if e.alive:
+                e.draw(win)
+                # Stun indicator overlay using stunned.png above enemy while stunned
+                if getattr(e, 'stun_timer', 0) > 0 and stunned_img is not None:
+                    try:
+                        icon = stunned_img
+                        cx = int(e.x + e.size/2)
+                        top = int(e.y) - 10
+                        rect = icon.get_rect(center=(cx, top))
+                        win.blit(icon, rect.topleft)
+                    except Exception:
+                        pass
+
+        # --- NEW: enemy projectiles can hit the player (mage magic) ---
+        # use player_center computed from previous frame; handle once per frame
+        # projectiles should not hurt the player while invincible, during spawn grace,
+        # or while the player is actively dashing
+        if invincible_timer <= 0 and spawn_grace_timer <= 0 and not is_dashing:
+             proj_hit = False
+             pcx, pcy = player_center
+             for e in enemies:
+                 if not e.alive or not getattr(e, "projectiles", None):
+                     continue
+                 for p in list(e.projectiles):
+                    # projectile position
+                    pxp = p.get('x', 0.0)
+                    pyp = p.get('y', 0.0)
+                    dxp = pxp - pcx
+                    dyp = pyp - pcy
+                    pdist = math.hypot(dxp, dyp)
+                    # choose projectile radius from image if available
+                    proj_radius = 12
+                    proj_img = getattr(e, "projectile_img", None)
+                    if proj_img:
+                        proj_radius = max(8, proj_img.get_width() // 2)
+                    else:
+                        proj_radius = max(8, int(e.size * 0.12))
+                    if pdist <= proj_radius:
+                        # projectile hit player
+                        hearts -= 1
+                        # knockback away from projectile direction
+                        try:
+                            vx = p.get('vx', 0.0)
+                            vy = p.get('vy', 0.0)
+                            kb_force = 30.0
+                            player_kb_vx = vx * kb_force
+                            player_kb_vy = vy * kb_force
+                            player_kb_time = player_kb_duration
+                        except Exception:
+                            pass
+                        invincible_timer = invincible_duration
+                        player_flash_timer = player_flash_duration
+                        # remove the projectile
+                        try:
+                            e.projectiles.remove(p)
+                        except Exception:
+                            pass
+                        proj_hit = True
+                        # check death
+                        if hearts <= 0:
+                            try:
+                                pause.show_death_screen(win)
+                            except Exception:
+                                pass
+                            return
+                        break
+                 if proj_hit:
+                    break
+
+        # Enemy -> player collision (damage)
+        # smaller hitbox for player (inset on all sides)
+        inset = 10
+        player_rect = pygame.Rect(int(x) + inset, int(y) + inset, char_size - inset*2, char_size - inset*2)
+        # direct enemy collision damage should also not apply while dashing
+        if invincible_timer <= 0 and spawn_grace_timer <= 0 and not is_dashing:
+             for e in enemies:
+                 # skip dead enemies and skip direct contact damage from mages (they damage via projectiles)
+                 if not e.alive or getattr(e, "can_cast", False) or getattr(e, "stun_timer", 0) > 0:
+                      continue
+                 if e.rect().colliderect(player_rect):
+                      hearts -= 1
+                      ecx = e.x + e.size / 2
+                      ecy = e.y + e.size / 2
+                      pcx = x + char_size / 2
+                      pcy = y + char_size / 2
+                      kb_x = pcx - ecx
+                      kb_y = pcy - ecy
+                      norm = math.hypot(kb_x, kb_y)
+                      if norm > 1e-6:
+                         nx = kb_x / norm
+                         ny = kb_y / norm
+                      else:
+                         nx, ny = 0.0, -1.0
+                      kb_force = 20.0   # greatly reduced knockback strength
+                      player_kb_vx = nx * kb_force
+                      player_kb_vy = ny * kb_force
+                      player_kb_time = player_kb_duration
+                      invincible_timer = invincible_duration
+                      # flash player and enemy briefly
+                      player_flash_timer = player_flash_duration
+                      try:
+                          e.flash_timer = e.flash_duration
+                      except Exception:
+                          pass
+                      if hearts <= 0:
+                          try:
+                              pause.show_death_screen(win)
+                          except Exception:
+                              pass
+                          return
+                      break
 
         # Then draw character
         char = animations[last_direction][frame_index]
-        win.blit(char, (x, y))
+        # spawn grace: yellow overlay; damage flash: red overlay (spawn grace takes precedence)
+        draw_char = char
+        if spawn_grace_timer > 0:
+            # When grace is nearly over, blink the yellow tint to signal impending end.
+            try:
+                blink_threshold = 800  # ms before end when blinking starts
+                blink_period = 200     # ms blink interval
+                if spawn_grace_timer <= blink_threshold:
+                    blink_on = (pygame.time.get_ticks() // blink_period) % 2 == 0
+                else:
+                    blink_on = True
+                if blink_on:
+                    draw_char = char.copy()
+                    # soft yellow tint
+                    draw_char.fill((200, 180, 60, 0), special_flags=pygame.BLEND_RGBA_ADD)
+                else:
+                    draw_char = char
+            except Exception:
+                draw_char = char
+        elif player_flash_timer > 0:
+            try:
+                draw_char = char.copy()
+                draw_char.fill((180, 40, 40, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            except Exception:
+                draw_char = char
+        win.blit(draw_char, (x, y))
 
-        # Update player_center based on current x,y for drawing and aiming
+        # Update player_center
         char_rect = char.get_rect(topleft=(x, y))
         player_center = char_rect.center
 
         # Crosshair
         draw_crosshair(win, player_center)
 
+        # HUD: stamina bars
         bar_x = offset_x
         bar_y = offset_y - 40
         BAR_W, BAR_H = 60, 20
@@ -556,13 +1118,11 @@ def run_game(screen=None):
             if fill > 0:
                 fill_w = int(BAR_W * fill)
                 pygame.draw.rect(win, (225, 225, 225), (x_pos, y_pos, fill_w, BAR_H))
-        
         # Attack cooldown bar
         bar_w, bar_h = 100, 12
         bar_x = offset_x
         bar_y = offset_y - 60
         pygame.draw.rect(win, (100, 100, 100), (bar_x, bar_y, bar_w, bar_h))  # bg
-
         if cooldown_timer > 0:
             ratio = 1 - (cooldown_timer / (attack_duration + attack_cooldown))
             fill_w = int(bar_w * ratio)
@@ -570,6 +1130,7 @@ def run_game(screen=None):
         else:
             pygame.draw.rect(win, (0, 200, 0), (bar_x, bar_y, bar_w, bar_h))  # ready
 
+        # Attack drawing and hit detection
         if attacking:
             px, py = player_center
             progress = 1 - (attack_timer / attack_duration)  # 0 → 1
@@ -583,100 +1144,156 @@ def run_game(screen=None):
             rect = rotated_sword.get_rect(center=(sword_center_x, sword_center_y))
             win.blit(rotated_sword, rect.topleft)
 
-        # Draw 3 hearts to the right of the map (aligned to map's right edge).
-        total_hearts = 3
+            # Hit detection (accurate enough): check each alive enemy center against arc and reach
+            sword_reach = 64  # effective reach in pixels from player center
+            for e in enemies:
+                if not e.alive:
+                    continue
+                eid = id(e)
+                if eid in attack_hits:
+                    continue
+                # enemy center
+                ecx = e.x + e.size / 2
+                ecy = e.y + e.size / 2
+                vx = ecx - px
+                vy = ecy - py
+                dist = math.hypot(vx, vy)
+                # allow hit if enemy rectangle intersects reach circle (account for enemy size)
+                if dist > sword_reach + (e.size / 2):
+                    continue
+                # angle to enemy (degrees)
+                ang = math.degrees(math.atan2(vy, vx))
+                diff = (ang - current_angle + 180) % 360 - 180
+                if abs(diff) <= (swing_arc / 2):
+                    # line-of-sight check: sample along ray from player to enemy and ensure no wall tile blocks it.
+                    los_clear = True
+                    if not getattr(e, "can_fly", False):
+                        if dist > 1e-4:
+                            dirx = vx / dist
+                            diry = vy / dist
+                            step = 8
+                            steps = max(1, int(dist // step))
+                            for s in range(1, steps + 1):
+                                sx = px + dirx * (s * step)
+                                sy = py + diry * (s * step)
+                                tx = int((sx - offset_x) // TILE_SIZE)
+                                ty = int((sy - offset_y) // TILE_SIZE)
+                                if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT:
+                                    los_clear = False
+                                    break
+                                if game_map[ty][tx] in WALL_TILES:
+                                    los_clear = False
+                                    break
+                        else:
+                            los_clear = True
+                    if not los_clear:
+                        continue
+                    # hit: deal damage and apply knockback away from player
+                    e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
+                    # apply poison stacks if any were selected
+                    if poison_level > 0:
+                        try:
+                            e.apply_poison(poison_level)
+                        except Exception:
+                            pass
+                    attack_hits.add(eid)
+
+            # --- New: allow sword to break mage projectiles ---
+            # check every enemy projectile and remove if within swing arc+reach
+            proj_reach = 48  # slightly shorter reach for projectiles
+            for e in enemies:
+                if not e.alive or not getattr(e, "projectiles", None):
+                    continue
+                # iterate copy because we may remove entries
+                for p in list(e.projectiles):
+                    pxp = p['x']
+                    pyp = p['y']
+                    vxp = pxp - px
+                    vyp = pyp - py
+                    pdist = math.hypot(vxp, vyp)
+                    if pdist > proj_reach + max(6, e.size * 0.1):
+                        continue
+                    pang = math.degrees(math.atan2(vyp, vxp))
+                    pdiff = (pang - current_angle + 180) % 360 - 180
+                    if abs(pdiff) <= (swing_arc / 2):
+                        # destroy the projectile (it "breaks")
+                        try:
+                            e.projectiles.remove(p)
+                        except Exception:
+                            pass
+                        # (no enemy flash here so mages don't turn red when their orb is broken)
+
+        # Draw hearts using the configured max_hearts for the chosen difficulty
+        total_hearts = max_hearts
+
         heart_w = heart_full.get_width()
         heart_h = heart_full.get_height()
         margin = 0
-        # place hearts flush to right side of the map area
         start_x = offset_x + WIDTH * TILE_SIZE - (total_hearts * heart_w) - margin
-        # align hearts vertically with the stamina bar (centered on the bar)
         heart_y = bar_y + (bar_h - heart_h) // 2
         for i in range(total_hearts):
             hx = start_x + i * (heart_w + heart_spacing)
             img = heart_full if i < hearts else heart_empty
             win.blit(img, (hx, heart_y))
 
-        pygame.display.update()
+        # --- SHIELD LOGIC: update shield angle ---
+        if shield_count > 0:
+            shield_angle = (shield_angle + 3 * (dt / 1000.0)) % (2 * math.pi)  # Slower rotation: 0.5 radians per second
 
-def show_pause_overlay(snapshot, win_surface):
-    """Show pause overlay and return one of:
-       ("resume", None), ("options", None), ("shop", None), ("menu", None)"""
-    sw, sh = win_surface.get_size()
-    # create blurred snapshot
-    if snapshot:
-        try:
-            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
-            blurred = pygame.transform.smoothscale(small, (sw, sh))
-        except Exception:
-            blurred = pygame.Surface((sw, sh))
-            blurred.fill((0, 0, 0))
-    else:
-        blurred = pygame.Surface((sw, sh))
-        blurred.fill((0, 0, 0))
+        # --- DRAW SHIELD(S) ---
+        if shield_count > 0:
+            for i in range(shield_count):
+                angle = shield_angle + (2 * math.pi * i / shield_count)
+                px, py = player_center
+                sx = int(px + shield_radius * math.cos(angle) - shield_img.get_width() // 2)
+                sy = int(py + shield_radius * math.sin(angle) - shield_img.get_height() // 2)
+                win.blit(shield_img, (sx, sy))
 
-    font_title = pygame.font.SysFont("arial", 48, bold=True)
-    font_btn = pygame.font.SysFont("arial", 28, bold=True)
+        # --- SHIELD COLLISION WITH ENEMIES ---
+        if shield_count > 0:
+            for enemy in enemies:
+                if not getattr(enemy, "alive", True):
+                    continue
+                ex, ey = enemy.x + enemy.size // 2, enemy.y + enemy.size // 2
+                for i in range(shield_count):
+                    angle = shield_angle + (2 * math.pi * i / shield_count)
+                    px, py = player_center
+                    sx = px + shield_radius * math.cos(angle)
+                    sy = py + shield_radius * math.sin(angle)
+                    dist = math.hypot(ex - sx, ey - sy)
+                    if dist < (enemy.size // 2 + shield_img.get_width() // 2):
+                        if not hasattr(enemy, "stun_timer") or enemy.stun_timer <= 0:
+                            enemy.stun_timer = shield_stun_duration
+                        dx = ex - sx
+                        dy = ey - sy
+                        norm = math.hypot(dx, dy)
+                        if norm > 1e-3:
+                            enemy.kb_vx = (dx / norm) * 8
+                            enemy.kb_vy = (dy / norm) * 8
+                            enemy.kb_time = 120
 
-    # define buttons: Resume, Options, Shop, Quit to Menu
-    resume_rect = pygame.Rect((sw//2 - 120, sh//2 - 80, 240, 40))
-    options_rect = pygame.Rect((sw//2 - 120, sh//2 - 30, 240, 40))
-    shop_rect = pygame.Rect((sw//2 - 120, sh//2 + 20, 240, 40))
-    quit_rect = pygame.Rect((sw//2 - 120, sh//2 + 70, 240, 40))
-
-    clock_pause = pygame.time.Clock()
-    while True:
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                return ("menu", None)
-            if ev.type == pygame.KEYDOWN:
-                if ev.key == pygame.K_ESCAPE:
-                    return ("resume", None)
-            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                mx,my = ev.pos
-                if resume_rect.collidepoint((mx,my)):
-                    return ("resume", None)
-                if options_rect.collidepoint((mx,my)):
-                    return ("options", None)
-                if shop_rect.collidepoint((mx,my)):
-                    return ("shop", None)
-                if quit_rect.collidepoint((mx,my)):
-                    return ("menu", None)
-
-        # draw blurred background + overlay + panel onto the provided surface
-        win_surface.blit(blurred, (0,0))
-        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        overlay.fill((0,0,0,140))
-        win_surface.blit(overlay, (0,0))
-
-        panel_w, panel_h = 520, 360
-        panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
-        pygame.draw.rect(win_surface, (30,30,30), panel)
-        pygame.draw.rect(win_surface, (120,120,120), panel, 3)
-
-        title_surf = font_title.render("Paused", True, (220,220,220))
-        win_surface.blit(title_surf, title_surf.get_rect(center=(sw//2, panel.top + 40)))
-
-        # draw buttons
-        pygame.draw.rect(win_surface, (200,200,200), resume_rect)
-        pygame.draw.rect(win_surface, (200,200,200), options_rect)
-        pygame.draw.rect(win_surface, (200,200,200), shop_rect)
-        pygame.draw.rect(win_surface, (200,200,200), quit_rect)
-        win_surface.blit(font_btn.render("Resume (Esc)", True, (0,0,0)), font_btn.render("Resume (Esc)", True, (0,0,0)).get_rect(center=resume_rect.center))
-        win_surface.blit(font_btn.render("Options", True, (0,0,0)), font_btn.render("Options", True, (0,0,0)).get_rect(center=options_rect.center))
-        win_surface.blit(font_btn.render("Shop", True, (0,0,0)), font_btn.render("Shop", True, (0,0,0)).get_rect(center=shop_rect.center))
-        win_surface.blit(font_btn.render("Quit to Menu", True, (0,0,0)), font_btn.render("Quit to Menu", True, (0,0,0)).get_rect(center=quit_rect.center))
+        # --- SHIELD COLLISION WITH PROJECTILES ---
+        for enemy in enemies:
+            if hasattr(enemy, "projectiles"):
+                for proj in list(enemy.projectiles):
+                    px_proj = proj.get("x", 0)
+                    py_proj = proj.get("y", 0)
+                    for i in range(shield_count):
+                        angle = shield_angle + (2 * math.pi * i / shield_count)
+                        px, py = player_center
+                        sx = px + shield_radius * math.cos(angle)
+                        sy = py + shield_radius * math.sin(angle)
+                        dist = math.hypot(px_proj - sx, py_proj - sy)
+                        if dist < (shield_img.get_width() // 2 + 8):
+                            enemy.projectiles.remove(proj)
+                            break
 
         pygame.display.update()
-        clock_pause.tick(60)
 
-# ======================   
+# ======================
 # START GAME
 # ======================
 if __name__ == "__main__":
-    # Import and launch the menu from menu.py
-    import menu
-    menu.run_menu()
-    # Import and launch the menu from menu.py
+    # show the menu first; the menu will call main.run_game(SCREEN) when PLAY is pressed
     import menu
     menu.run_menu()
