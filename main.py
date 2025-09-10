@@ -390,6 +390,9 @@ def run_game(screen=None, difficulty: str = "normal"):
     # preload damaged sound
     try: sounds.preload('Damaged')
     except Exception: pass
+    # preload dash sound
+    try: sounds.preload('Dash')
+    except Exception: pass
 
     # --- DEATH PARTICLES SYSTEM ---
     # Each particle: {'x','y','vx','vy','size','color',(optional) 'life_ms'}
@@ -700,6 +703,9 @@ def run_game(screen=None, difficulty: str = "normal"):
                     is_dashing = True
                     dash_timer = dash_duration
                     stamina -= 1.0
+                    # play dash sound
+                    try: sounds.play_sfx('Dash')
+                    except Exception: pass
                     dx_tmp, dy_tmp = 0, 0
                     if "left" in pressed_dirs: dx_tmp -= 1
                     if "right" in pressed_dirs: dx_tmp += 1
