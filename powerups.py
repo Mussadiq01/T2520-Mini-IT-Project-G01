@@ -1,6 +1,25 @@
 import pygame
 from pathlib import Path
 import random
+import sounds  # added for selection SFX and master volume
+
+# ensure MASTER_VOLUME exists
+try:
+    if not hasattr(sounds, 'MASTER_VOLUME'):
+        sounds.MASTER_VOLUME = 1.0
+except Exception:
+    pass
+
+def _apply_master_volume():
+    mv = getattr(sounds, 'MASTER_VOLUME', 1.0)
+    try: pygame.mixer.music.set_volume(mv)
+    except Exception: pass
+    try:
+        chs = pygame.mixer.get_num_channels()
+        for i in range(chs):
+            try: pygame.mixer.Channel(i).set_volume(mv)
+            except Exception: pass
+    except Exception: pass
 
 def _build_blur(snapshot, target_size):
     if snapshot:
@@ -65,6 +84,11 @@ def choose_powerup(snapshot, screen_surface):
     title_f = _get_font(36)
     info_f = _get_font(18)
     clock = pygame.time.Clock()
+    # preload selection sound (idempotent)
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
 
     # prepare overlay and title once
     overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
@@ -173,6 +197,11 @@ def choose_powerup(snapshot, screen_surface):
                 i = random.randint(0, 2)
                 pick = choices[i]
                 elapsed = pygame.time.get_ticks() - start_ticks
+                try:
+                    sounds.play_sfx('SelectSound')
+                except Exception:
+                    pass
+                _apply_master_volume()
                 return pick, elapsed
             if ev.type == pygame.KEYDOWN:
                 # ignore ESC so players must pick a card
@@ -183,6 +212,11 @@ def choose_powerup(snapshot, screen_surface):
                     if r.collidepoint((mx, my)):
                         pick = choices[i]
                         elapsed = pygame.time.get_ticks() - start_ticks
+                        try:
+                            sounds.play_sfx('SelectSound')
+                        except Exception:
+                            pass
+                        _apply_master_volume()
                         return pick, elapsed
 
         # draw background + dark overlay

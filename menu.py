@@ -2,6 +2,30 @@ import pygame
 import sys
 from pathlib import Path
 import os
+import sounds  # added for click SFX and master volume
+
+# master volume helper (non-breaking; defaults to 1.0)
+try:
+    if not hasattr(sounds, 'MASTER_VOLUME'):
+        sounds.MASTER_VOLUME = 1.0
+except Exception:
+    pass
+
+def _apply_master_volume():
+    mv = getattr(sounds, 'MASTER_VOLUME', 1.0)
+    try:
+        pygame.mixer.music.set_volume(mv)
+    except Exception:
+        pass
+    try:
+        chs = pygame.mixer.get_num_channels()
+        for i in range(chs):
+            try:
+                pygame.mixer.Channel(i).set_volume(mv)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 pygame.init()
 
@@ -92,7 +116,9 @@ def show_options(snapshot, screen_surface):
     res_font = get_font(11)
     apply_font = get_font(15)
 
-    vol = pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0
+    # original master volume snapshot (keeps old behavior if sounds missing)
+    orig_vol = getattr(sounds, 'MASTER_VOLUME', pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0)
+    vol = orig_vol
 
     # Precompute panel & apply/back rects so event handling can reference them
     panel_w, panel_h = 700, 300
@@ -106,12 +132,30 @@ def show_options(snapshot, screen_surface):
     dragging = False
     clock_local = pygame.time.Clock()
 
+    # preload select sound and honor current master volume
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
+    _apply_master_volume()
+
     while True:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                # discard changes, restore original
+                try:
+                    pygame.mixer.music.set_volume(orig_vol)
+                    sounds.MASTER_VOLUME = orig_vol
+                except Exception:
+                    pass
+                _apply_master_volume()
+                try:
+                    sounds.play_sfx('SelectSound')
+                except Exception:
+                    pass
                 return ("resume", None)
             if ev.type == pygame.MOUSEBUTTONDOWN:
                 mx,my = ev.pos
@@ -122,15 +166,37 @@ def show_options(snapshot, screen_surface):
                 dragging = False
                 mx, my = ev.pos
                 if apply_r.collidepoint((mx, my)):
-                    # no resolution changes; just close options (volume already set live)
+                    # commit changes
+                    try:
+                        sounds.MASTER_VOLUME = vol
+                        pygame.mixer.music.set_volume(vol)
+                    except Exception:
+                        pass
+                    _apply_master_volume()
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return ("resume", None)
                 if back_r.collidepoint((mx, my)):
+                    # revert changes
+                    try:
+                        pygame.mixer.music.set_volume(orig_vol)
+                        sounds.MASTER_VOLUME = orig_vol
+                    except Exception:
+                        pass
+                    _apply_master_volume()
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return ("resume", None)
             if ev.type == pygame.MOUSEMOTION and dragging:
                 mx, my = ev.pos
                 t = (mx - slider_rect.left) / slider_rect.width
                 t = max(0.0, min(1.0, t))
                 vol = t
+                # live preview (music only)
                 try:
                     pygame.mixer.music.set_volume(vol)
                 except Exception:
@@ -203,17 +269,36 @@ def show_pause_overlay(snapshot, screen_surface):
             if ev.type == pygame.QUIT:
                 return ("menu", None)
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                try:
+                    sounds.play_sfx('SelectSound')
+                except Exception:
+                    pass
                 return ("resume", None)
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 if resume_rect.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return ("resume", None)
                 if options_rect.collidepoint((mx, my)):
-                    # signal that Options was requested; do NOT open it here to avoid nesting.
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return ("options", None)
                 if shop_rect.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return ("shop", None)
                 if quit_rect.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return ("menu", None)
 
         # draw overlay onto provided surface
@@ -834,7 +919,11 @@ def show_difficulty(snapshot, screen_surface):
     title_f = get_font(44)
     desc_f = get_font(18)
     clock_local = pygame.time.Clock()
-
+    # preload select sound (idempotent)
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
     # adaptive panel size so things fit on small screens
     panel_w = min(900, max(520, sw - 160))
     panel_h = min(420, max(280, int(sh * 0.36)))
@@ -878,14 +967,30 @@ def show_difficulty(snapshot, screen_surface):
                 sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return None
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 if easy_r.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return "easy"
                 if normal_r.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return "normal"
                 if hard_r.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     return "hard"
 
         # draw
@@ -941,6 +1046,50 @@ def show_difficulty(snapshot, screen_surface):
         pygame.display.update()
         clock_local.tick(60)
 
+# Menu background music helpers (added)
+_menu_music_started = False
+
+def _find_menu_music():
+    base = Path(__file__).parent
+    snd_dir = base.joinpath("sounds")
+    if not snd_dir.exists():
+        return None
+    for ext in ("ogg", "mp3", "wav"):
+        p = snd_dir.joinpath(f"MainMenuBGM.{ext}")
+        if p.exists():
+            return str(p)
+    for name in ("menu_music", "menu_theme", "music_menu", "menu", "background"):
+        for ext in ("ogg", "mp3", "wav"):
+            p = snd_dir.joinpath(f"{name}.{ext}")
+            if p.exists():
+                return str(p)
+    return None
+
+def start_menu_music():
+    global _menu_music_started
+    if _menu_music_started:
+        return
+    try:
+        path = _find_menu_music()
+        if path:
+            pygame.mixer.music.load(path)
+            vol = getattr(sounds, 'MASTER_VOLUME', 1.0)
+            pygame.mixer.music.set_volume(vol)
+            pygame.mixer.music.play(-1)
+            _menu_music_started = True
+    except Exception:
+        pass
+
+def stop_menu_music():
+    global _menu_music_started
+    if not _menu_music_started:
+        return
+    try:
+        pygame.mixer.music.stop()
+    except Exception:
+        pass
+    _menu_music_started = False
+
 def run_menu():
     global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen
     clock = pygame.time.Clock()
@@ -964,22 +1113,27 @@ def run_menu():
             Button("OPTIONS",(btn_x, btn_y_start + 2*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
             Button("QUIT",   (btn_x, btn_y_start + 3*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
         ]
+        # preload select sound (idempotent)
+        try:
+            sounds.preload('SelectSound')
+        except Exception:
+            pass
 
     # initial assets
     background = None
     buttons = []
     btn_w = btn_h = btn_x = btn_y_start = btn_gap = 0
     create_assets()
+    start_menu_music()  # start looping menu music
 
-    # Options overlay UI (nested so it can reuse create_assets/context)
     def run_options(snapshot):
-        # delegate to top-level show_options using the menu SCREEN
         return show_options(snapshot, SCREEN)
 
     while True:
         mouse_pos = pygame.mouse.get_pos()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                stop_menu_music()
                 pygame.quit()
                 sys.exit()
 
@@ -1006,29 +1160,41 @@ def run_menu():
                 # use the click position from the event (avoid stale mouse_pos issues)
                 mx, my = event.pos
                 if buttons[0].is_clicked((mx, my)):
-                    # Show difficulty chooser before starting game
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     try:
                         snap = SCREEN.copy()
                     except Exception:
                         snap = None
                     chosen = show_difficulty(snap, SCREEN)
                     if chosen is None:
-                        # cancelled
                         pass
                     else:
+                        stop_menu_music()  # stop before entering game
                         import main
-                        # pass chosen difficulty into the game
                         main.run_game(SCREEN, difficulty=chosen)
+                        start_menu_music()  # resume after returning from game
                     create_assets()
                 elif buttons[1].is_clicked((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     try:
                         snap = SCREEN.copy()
                     except Exception:
                         snap = None
                     res = show_shop(snap, SCREEN)
                     if res and res[0] == "menu":
+                        stop_menu_music()
                         return
                 elif buttons[2].is_clicked((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
                     opt_res = run_options(background)
                     if opt_res and opt_res[0] == "resolution_changed":
                         new_size = opt_res[1]
@@ -1037,9 +1203,13 @@ def run_menu():
                         SCREEN_W, SCREEN_H = SCREEN.get_size()
                         create_assets()
                 elif buttons[3].is_clicked((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
+                    stop_menu_music()
                     pygame.quit()
                     sys.exit()
-
         # draw background and grey square border
         SCREEN.blit(background, (0, 0))
         border_margin = 20
