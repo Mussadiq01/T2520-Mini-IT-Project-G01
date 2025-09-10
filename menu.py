@@ -2,6 +2,25 @@ import pygame
 import sys
 from pathlib import Path
 import os
+import sounds  # added for click SFX
+
+# master volume helper
+try:
+    if not hasattr(sounds, 'MASTER_VOLUME'):
+        sounds.MASTER_VOLUME = 1.0
+except Exception:
+    pass
+
+def _apply_master_volume():
+    mv = getattr(sounds, 'MASTER_VOLUME', 1.0)
+    try: pygame.mixer.music.set_volume(mv)
+    except Exception: pass
+    try:
+        chs = pygame.mixer.get_num_channels()
+        for i in range(chs):
+            try: pygame.mixer.Channel(i).set_volume(mv)
+            except Exception: pass
+    except Exception: pass
 
 pygame.init()
 
@@ -92,7 +111,9 @@ def show_options(snapshot, screen_surface):
     res_font = get_font(11)
     apply_font = get_font(15)
 
-    vol = pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0
+    # original master volume snapshot
+    orig_vol = getattr(sounds, 'MASTER_VOLUME', pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0)
+    vol = orig_vol  # working (temporary) volume
 
     # Precompute panel & apply/back rects so event handling can reference them
     panel_w, panel_h = 700, 300
@@ -106,35 +127,58 @@ def show_options(snapshot, screen_surface):
     dragging = False
     clock_local = pygame.time.Clock()
 
+    try: sounds.preload('SelectSound')
+    except Exception: pass
+    _apply_master_volume()  # respect existing master when opening
     while True:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                pygame.quit(); sys.exit()
             if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                # discard changes, restore original
+                try:
+                    pygame.mixer.music.set_volume(orig_vol)
+                    sounds.MASTER_VOLUME = orig_vol
+                except Exception: pass
+                _apply_master_volume()
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
                 return ("resume", None)
             if ev.type == pygame.MOUSEBUTTONDOWN:
                 mx,my = ev.pos
                 if slider_rect.collidepoint((mx,my)):
                     dragging = True
             if ev.type == pygame.MOUSEBUTTONUP:
-                # stop dragging and treat a release as a click for Apply/Back
                 dragging = False
-                mx, my = ev.pos
-                if apply_r.collidepoint((mx, my)):
-                    # no resolution changes; just close options (volume already set live)
+                mx,my = ev.pos
+                if apply_r.collidepoint((mx,my)):
+                    # commit changes
+                    try:
+                        sounds.MASTER_VOLUME = vol
+                        pygame.mixer.music.set_volume(vol)
+                    except Exception: pass
+                    _apply_master_volume()
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return ("resume", None)
-                if back_r.collidepoint((mx, my)):
+                if back_r.collidepoint((mx,my)):
+                    # revert changes
+                    try:
+                        pygame.mixer.music.set_volume(orig_vol)
+                        sounds.MASTER_VOLUME = orig_vol
+                    except Exception: pass
+                    _apply_master_volume()
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return ("resume", None)
             if ev.type == pygame.MOUSEMOTION and dragging:
-                mx, my = ev.pos
+                mx,my = ev.pos
                 t = (mx - slider_rect.left) / slider_rect.width
                 t = max(0.0, min(1.0, t))
                 vol = t
-                try:
-                    pygame.mixer.music.set_volume(vol)
-                except Exception:
-                    pass
+                # live preview ONLY music (do not commit MASTER_VOLUME until Apply)
+                try: pygame.mixer.music.set_volume(vol)
+                except Exception: pass
 
         # draw
         screen_surface.blit(blurred, (0,0))
@@ -377,31 +421,40 @@ def show_shop(snapshot, screen_surface):
                 if ev2.type == pygame.QUIT:
                     return ("menu", None)
                 if ev2.type == pygame.KEYDOWN and ev2.key == pygame.K_ESCAPE:
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return ("back", None)
                 if ev2.type == pygame.MOUSEBUTTONDOWN and ev2.button == 1:
                     mx2,my2 = ev2.pos
                     if not purchased:
                         if buy_rect.collidepoint((mx2,my2)):
-                            # mark as purchased — persist to outer shop state
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             purchased = True
                             if "Sword" in item_name:
                                 weapons_purchased.add(item_name)
                             else:
                                 armors_purchased.add(item_name)
                         elif back_rect.collidepoint((mx2,my2)):
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             return ("back", None)
                     else:
-                        # after purchase show Equip / Upgrade buttons (handled below) — clicks return action
                         if equip_rect.collidepoint((mx2,my2)):
-                            # ensure equipped items are considered purchased as well
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             if "Sword" in item_name:
                                 weapons_purchased.add(item_name)
                             else:
                                 armors_purchased.add(item_name)
                             return ("equip", item_name)
                         if upgrade_rect.collidepoint((mx2,my2)):
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             return ("upgrade", item_name)
                         if back_rect.collidepoint((mx2,my2)):
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             return ("back", None)
 
             # draw modal
@@ -522,6 +575,9 @@ def show_shop(snapshot, screen_surface):
         sword_img = pygame.Surface((96, 96), pygame.SRCALPHA)
         pygame.draw.polygon(sword_img, (200, 200, 200), [(8,88),(48,8),(88,88)])
 
+    try: sounds.preload('SelectSound')
+    except Exception: pass
+
     # scrolling state (px offsets)
     weapons_offset = 0
     armors_offset = 0
@@ -551,25 +607,35 @@ def show_shop(snapshot, screen_surface):
                 return ("menu", None)
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return ("resume", None)
                 if ev.key == pygame.K_TAB:
                     # toggle focused row
                     focused_row = "armors" if focused_row == "weapons" else "weapons"
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                 if ev.key == pygame.K_RIGHT:
                     # move selection in focused row
                     if focused_row == "weapons":
                         weapons_selected = min(len(weapons)-1, weapons_selected+1)
                     else:
                         armors_selected = min(len(armors)-1, armors_selected+1)
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                 if ev.key == pygame.K_LEFT:
                     if focused_row == "weapons":
                         weapons_selected = max(0, weapons_selected-1)
                     else:
                         armors_selected = max(0, armors_selected-1)
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
             if ev.type == pygame.MOUSEBUTTONDOWN:
                 # only treat left-click as selection/click
                 if ev.button == 1:
                     if back_rect.collidepoint(ev.pos):
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
                         return ("resume", None)
                     # record click position for later per-row handling
                     clicked_pos = ev.pos
@@ -651,9 +717,13 @@ def show_shop(snapshot, screen_surface):
             if w_left_rect.collidepoint((mx,my)):
                 weapons_selected = max(0, weapons_selected-1)
                 focused_row = "weapons"
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             elif w_right_rect.collidepoint((mx,my)):
                 weapons_selected = min(len(weapons)-1, weapons_selected+1)
                 focused_row = "weapons"
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             else:
                 # item clicks
                 for i in range(len(weapons)):
@@ -662,19 +732,16 @@ def show_shop(snapshot, screen_surface):
                     if item_rect.collidepoint((mx,my)):
                         weapons_selected = i
                         focused_row = "weapons"
-                        # open item detail page
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
                         try:
                             res = show_item_page(weapons[i], sword_img)
                             # persist purchase/equip if requested
                             if res and res[0] == "equip":
                                 weapons_purchased.add(res[1])
-                                try:
-                                    idx = weapons.index(res[1])
-                                    weapons_equipped = idx
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                                try: weapons_equipped = weapons.index(res[1])
+                                except Exception: pass
+                        except Exception: pass
                         break
 
         # draw armors row
@@ -722,9 +789,13 @@ def show_shop(snapshot, screen_surface):
             if a_left_rect.collidepoint((mx,my)):
                 armors_selected = max(0, armors_selected-1)
                 focused_row = "armors"
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             elif a_right_rect.collidepoint((mx,my)):
                 armors_selected = min(len(armors)-1, armors_selected+1)
                 focused_row = "armors"
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             else:
                 for i in range(len(armors)):
                     x = x_start_armors + i * (item_w + spacing) + armors_offset
@@ -732,18 +803,15 @@ def show_shop(snapshot, screen_surface):
                     if item_rect.collidepoint((mx,my)):
                         armors_selected = i
                         focused_row = "armors"
-                        # open item detail page (armor uses same placeholder image)
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
                         try:
                             res = show_item_page(armors[i], sword_img)
                             if res and res[0] == "equip":
                                 armors_purchased.add(res[1])
-                                try:
-                                    idx = armors.index(res[1])
-                                    armors_equipped = idx
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                                try: armors_equipped = armors.index(res[1])
+                                except Exception: pass
+                        except Exception: pass
                         clicked_pos = None
                         break
 
@@ -834,6 +902,9 @@ def show_difficulty(snapshot, screen_surface):
     title_f = get_font(44)
     desc_f = get_font(18)
     clock_local = pygame.time.Clock()
+    # preload select sound (idempotent)
+    try: sounds.preload('SelectSound')
+    except Exception: pass
 
     # adaptive panel size so things fit on small screens
     panel_w = min(900, max(520, sw - 160))
@@ -878,14 +949,22 @@ def show_difficulty(snapshot, screen_surface):
                 sys.exit()
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return None
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 if easy_r.collidepoint((mx, my)):
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return "easy"
                 if normal_r.collidepoint((mx, my)):
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return "normal"
                 if hard_r.collidepoint((mx, my)):
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return "hard"
 
         # draw
@@ -944,9 +1023,8 @@ def show_difficulty(snapshot, screen_surface):
 def run_menu():
     global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen
     clock = pygame.time.Clock()
-    # make fonts a bit smaller
-    title_font = get_font(64)    # reduced from 80
-    button_font = get_font(32)   # reduced from 40
+    title_font = get_font(64)
+    button_font = get_font(32)
 
     # helper to (re)create background and buttons using current SCREEN size
     def create_assets():
@@ -964,6 +1042,8 @@ def run_menu():
             Button("OPTIONS",(btn_x, btn_y_start + 2*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
             Button("QUIT",   (btn_x, btn_y_start + 3*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
         ]
+        # preload select sound (SelectSound.mp3 in sounds/ folder)
+        sounds.preload('SelectSound')
 
     # initial assets
     background = None
@@ -1006,6 +1086,7 @@ def run_menu():
                 # use the click position from the event (avoid stale mouse_pos issues)
                 mx, my = event.pos
                 if buttons[0].is_clicked((mx, my)):
+                    sounds.play_sfx('SelectSound')
                     # Show difficulty chooser before starting game
                     try:
                         snap = SCREEN.copy()
@@ -1021,6 +1102,7 @@ def run_menu():
                         main.run_game(SCREEN, difficulty=chosen)
                     create_assets()
                 elif buttons[1].is_clicked((mx, my)):
+                    sounds.play_sfx('SelectSound')
                     try:
                         snap = SCREEN.copy()
                     except Exception:
@@ -1029,6 +1111,7 @@ def run_menu():
                     if res and res[0] == "menu":
                         return
                 elif buttons[2].is_clicked((mx, my)):
+                    sounds.play_sfx('SelectSound')
                     opt_res = run_options(background)
                     if opt_res and opt_res[0] == "resolution_changed":
                         new_size = opt_res[1]
@@ -1037,9 +1120,9 @@ def run_menu():
                         SCREEN_W, SCREEN_H = SCREEN.get_size()
                         create_assets()
                 elif buttons[3].is_clicked((mx, my)):
+                    sounds.play_sfx('SelectSound')
                     pygame.quit()
                     sys.exit()
-
         # draw background and grey square border
         SCREEN.blit(background, (0, 0))
         border_margin = 20
