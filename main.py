@@ -324,6 +324,15 @@ def run_game(screen=None, difficulty: str = "normal"):
         pygame.K_d: "right"
     }
 
+    # Helper: map a movement vector to a facing direction
+    def dir_from_vector(dx: float, dy: float, last_dir: str) -> str:
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return last_dir
+        if abs(dx) >= abs(dy):
+            return "right" if dx > 0 else "left"
+        else:
+            return "down" if dy > 0 else "up"
+
     game_map, floor_choices = pick_map()
     screen_width, screen_height = win.get_size()
     offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
@@ -613,21 +622,47 @@ def run_game(screen=None, difficulty: str = "normal"):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
+
+            # Track movement key presses/releases to determine facing priority
+            if event.type == pygame.KEYDOWN:
+                if event.key in key_to_dir:
+                    d = key_to_dir[event.key]
+                    if d in pressed_dirs:
+                        pressed_dirs.remove(d)
+                    pressed_dirs.append(d)
+            if event.type == pygame.KEYUP:
+                if event.key in key_to_dir:
+                    d = key_to_dir[event.key]
+                    if d in pressed_dirs:
+                        pressed_dirs.remove(d)
+
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 # pause overlay
                 try:
                     snapshot = win.copy()
                 except Exception:
                     snapshot = None
+                # Freeze grace timer while paused: measure paused duration and credit it back
+                pause_start = pygame.time.get_ticks()
                 res = pause.show_pause_overlay(snapshot, win)
+                try:
+                    paused_ms = max(0, pygame.time.get_ticks() - pause_start)
+                    spawn_grace_timer += paused_ms
+                except Exception:
+                    pass
                 if res and res[0] == "resume":
                     # simply continue
                     continue
                 if res and res[0] == "options":
-                    # lazy import menu to open options UI
+                    # lazy import menu to open options UI and also credit back time spent inside options
                     try:
-                        import menu
+                        opt_start = pygame.time.get_ticks()
                         opt_res = menu.show_options(snapshot, win)
+                        try:
+                            paused_ms2 = max(0, pygame.time.get_ticks() - opt_start)
+                            spawn_grace_timer += paused_ms2
+                        except Exception:
+                            pass
                         if opt_res and opt_res[0] == "resolution_changed":
                             new_size = opt_res[1]
                             pygame.display.set_mode(new_size)
@@ -746,6 +781,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                         norm = math.hypot(dx_tmp, dy_tmp)
                         dx_tmp /= norm
                         dy_tmp /= norm
+                        # Face the dash direction immediately
+                        last_direction = dir_from_vector(dx_tmp, dy_tmp, last_direction)
                         dash_dir = (dx_tmp, dy_tmp)
                         is_dashing = True
                         dash_timer = dash_duration
@@ -817,6 +854,13 @@ def run_game(screen=None, difficulty: str = "normal"):
                     dy /= norm
 
         moving = dx != 0 or dy != 0
+
+        # Update facing: prefer most-recent pressed direction if held; fallback to vector
+        if not is_dashing:
+            if pressed_dirs:
+                last_direction = pressed_dirs[-1]
+            elif moving:
+                last_direction = dir_from_vector(dx, dy, last_direction)
 
         speed = vel
         if is_dashing:
@@ -1274,6 +1318,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                 diff = (ang - current_angle + 180) % 360 - 180
                 if abs(diff) <= (swing_arc / 2):
                     # line-of-sight check: sample along ray from player to enemy and ensure no wall tile blocks it.
+                    # Relax near-enemy: ignore walls within ~60% of enemy size from their center.
                     los_clear = True
                     if not getattr(e, "can_fly", False):
                         if dist > 1e-4:
@@ -1284,6 +1329,9 @@ def run_game(screen=None, difficulty: str = "normal"):
                             for s in range(1, steps + 1):
                                 sx = px + dirx * (s * step)
                                 sy = py + diry * (s * step)
+                                # stop checking walls when very close to the enemy center
+                                if math.hypot(ecx - sx, ecy - sy) <= (e.size * 0.6):
+                                    break
                                 tx = int((sx - offset_x) // TILE_SIZE)
                                 ty = int((sy - offset_y) // TILE_SIZE)
                                 if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT:
