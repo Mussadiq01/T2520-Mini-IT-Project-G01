@@ -354,6 +354,9 @@ def run_game(screen=None, difficulty: str = "normal"):
 
     # spawn enemies
     enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+    # preload hit sound (safe if missing)
+    try: sounds.preload('HitSound')
+    except Exception: pass
 
     # --- DEATH PARTICLES SYSTEM ---
     # Each particle: {'x','y','vx','vy','size','color',(optional) 'life_ms'}
@@ -1130,6 +1133,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                         continue
                     # hit: deal damage and apply knockback away from player
                     e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
+                    try: sounds.play_sfx('HitSound')
+                    except Exception: pass
                     attack_hits.add(eid)
 
             # --- New: allow sword to break mage projectiles ---
