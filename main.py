@@ -1140,7 +1140,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
                             # death by lava
-                            try: sounds.play_sfx('Damaged')
+                            try: sounds.play_sfx('LavaDeath.mp3')
                             except Exception: pass
                             try:
                                 pause.show_death_screen(win)
@@ -1179,7 +1179,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
                         # death by lava
-                        try: sounds.play_sfx('Damaged')
+                        try: sounds.play_sfx('LavaDeath.mp3')
                         except Exception: pass
                         try:
                             pause.show_death_screen(win)
@@ -1714,6 +1714,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                 thrust_out = min(1.0, progress * 1.15)
                 ease = 1 - (1 - thrust_out) * (1 - thrust_out)
                 max_len = 68
+               
                 base_len = 12
 
                 current_len = base_len + ease * (max_len - base_len)
