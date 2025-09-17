@@ -8,6 +8,7 @@ from enemies import spawn_enemies, Enemy  # added: import enemy helpers
 import pause  # NEW: pause + death screens
 import powerups  # NEW: powerup selection UI
 import sounds  # NEW: gameplay music volume reference
+from weapons import WEAPON_LIST  # NEW: weapon definitions
 
 BASE_DIR = Path(__file__).parent
 def asset_path(*parts):
@@ -112,6 +113,41 @@ def run_game(screen=None, difficulty: str = "normal"):
     # --- Add MAPS definition so pick_map() can use it ---
     MAPS = [load_map_from_file(f"map{i}.txt") for i in range(1, 16)]
 
+    # Original staged non‑repeating normal progression: (1-5), (6-10), (11-15)
+    stage_indices = [list(range(0,5)), list(range(5,10)), list(range(10,15))]
+    for lst in stage_indices:
+        random.shuffle(lst)
+    current_stage = 0
+    index_in_stage = 0
+
+    # Boss levels: inserted AFTER normal levels 5, 10, 15 -> total 18 levels (15 normal + 3 boss)
+    # Boss map always uses map1 (index 0) and may repeat even if map1 already appeared as a normal level.
+    def get_boss_map():
+        game_map = MAPS[0]
+        floor_choices = [[None for _ in range(WIDTH)] for _ in range(HEIGHT)]
+        for y in range(HEIGHT):
+            for x in range(WIDTH):
+                if game_map[y][x] == ".":
+                    floor_choices[y][x] = random.choice(FLOOR_SPRITES)
+        return game_map, floor_choices
+
+    def pick_normal_map():
+        nonlocal current_stage, index_in_stage
+        while current_stage < len(stage_indices) and index_in_stage >= len(stage_indices[current_stage]):
+            current_stage += 1
+            index_in_stage = 0
+        if current_stage >= len(stage_indices):
+            return None
+        idx = stage_indices[current_stage][index_in_stage]
+        index_in_stage += 1
+        game_map = MAPS[idx]
+        floor_choices = [[None for _ in range(WIDTH)] for _ in range(HEIGHT)]
+        for y in range(HEIGHT):
+            for x in range(WIDTH):
+                if game_map[y][x] == ".":
+                    floor_choices[y][x] = random.choice(FLOOR_SPRITES)
+        return game_map, floor_choices
+
     def load_sprite(filename, size=TILE_SIZE, rotation=0):
         """Load sprite from project sprites/ folder. Return visible placeholder on failure."""
         full_path = asset_path("sprites", filename)
@@ -147,17 +183,51 @@ def run_game(screen=None, difficulty: str = "normal"):
         "T": load_sprite("trap_off.png")
     }
     
-    # Sword sprite
-    sword_img = load_sprite("sword.png", size=48)
-    attack_duration = 250  # ms swing
-    attack_cooldown = 300  # ms cooldown after swing
+    # --- WEAPON SYSTEM (replaces single hardcoded sword) ---
+    current_weapon_index = 0
+    current_weapon = WEAPON_LIST[current_weapon_index]
+    # NEW: player projectile state
+    current_projectile_img = None
+    player_projectiles = []  # each: {'x','y','vx','vy','life','damage','img','radius'}
+
+    sword_img = load_sprite(current_weapon.sprite_name, size=48)
+    attack_duration = current_weapon.swing_ms
+    attack_cooldown = current_weapon.cooldown_ms
     attacking = False
     attack_timer = 0
     cooldown_timer = 0
     swing_start_angle = 0
-    swing_arc = 120  # degrees of swing
-    sword_damage = 5
-    attack_hits = set()  # track enemies hit this swing (store id(enemy))
+    swing_arc = current_weapon.arc_deg
+    sword_damage = current_weapon.damage
+    attack_hits = set()
+    # NEW: bonus damage that applies to player projectiles (e.g., sunball)
+    projectile_damage_bonus = 0
+
+    def load_weapon(idx: int):
+        nonlocal current_weapon_index, current_weapon, sword_img, attack_duration, attack_cooldown, swing_arc, sword_damage, attack_hits, current_projectile_img
+        if 0 <= idx < len(WEAPON_LIST):
+            current_weapon_index = idx
+            current_weapon = WEAPON_LIST[idx]
+            # reload sprite (fallback handled by load_sprite)
+            sword_sprite_name = current_weapon.sprite_name or "sword.png"
+            sword = load_sprite(sword_sprite_name, size=48)
+            sword_img_local = sword if sword is not None else load_sprite("sword.png", size=48)
+            sword_img = sword_img_local
+            attack_duration = current_weapon.swing_ms
+            attack_cooldown = current_weapon.cooldown_ms
+            swing_arc = current_weapon.arc_deg
+            sword_damage = current_weapon.damage
+            attack_hits.clear()
+            # NEW: load projectile sprite (if weapon fires projectiles)
+            current_projectile_img = None
+            if current_weapon.projectile_damage > 0:
+                try:
+                    sprite_name = current_weapon.projectile_sprite or "sunball.png"
+                    # projectiles are usually smaller
+                    current_projectile_img = load_sprite(sprite_name, size=32)
+                except Exception:
+                    current_projectile_img = None
+
     # Poison level from powerups (stacks)
     poison_level = 0
 
@@ -194,14 +264,13 @@ def run_game(screen=None, difficulty: str = "normal"):
         load_sprite("floor_6.png")
     ]
 
-    def pick_map():
-        game_map = random.choice(MAPS)
-        floor_choices = [[None for _ in range(WIDTH)] for _ in range(HEIGHT)]
-        for y in range(HEIGHT):
-            for x in range(WIDTH):
-                if game_map[y][x] == ".":
-                    floor_choices[y][x] = random.choice(FLOOR_SPRITES)
-        return game_map, floor_choices
+    # REMOVED duplicate random pick_map; staged pick_map defined earlier
+    # def pick_map():
+    #     ... old random implementation ...
+
+    # NOTE: Removed an earlier redundant call to pick_map() that consumed the first map before play started.
+    # game_map, floor_choices = pick_map()  # (removed to ensure all 15 maps are played)
+    # level_number = 1 if game_map else 0  # (duplicate; real initialization occurs below)
 
     def draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active):
         for y in range(HEIGHT):
@@ -271,6 +340,12 @@ def run_game(screen=None, difficulty: str = "normal"):
         return rotations
 
     sword_rotations = precompute_rotations(sword_img, step=3)
+# (ensure projectile sprite for initial weapon if needed)
+    if current_weapon.projectile_damage > 0:
+        try:
+            current_projectile_img = load_sprite(current_weapon.projectile_sprite or "sunball.png", size=32)
+        except Exception:
+            current_projectile_img = None
 
     # ======================
     # CHARACTER SETUP
@@ -333,7 +408,55 @@ def run_game(screen=None, difficulty: str = "normal"):
         else:
             return "down" if dy > 0 else "up"
 
-    game_map, floor_choices = pick_map()
+    game_map, floor_choices = pick_normal_map()
+    level_number = 1 if game_map else 0  # NEW: level counter
+    is_boss_level = False  # track if current level is a boss level
+    normal_levels_completed = 0  # how many normal (non-boss) levels fully cleared
+
+    # NEW: dynamic enemy count per level range (non-boss levels)
+    def enemy_count_for_level(level_num: int, is_boss: bool) -> int:
+        if is_boss:
+            return 1  # boss level handled separately
+        if 1 <= level_num <= 5:
+            return 6
+        if 7 <= level_num <= 11:
+            return 8
+        if 13 <= level_num <= 17:
+            return 10
+        # fallback (covers any unexpected normal levels)
+        return 6
+
+    # NEW: per-level enemy scaling (HP and speed)
+    def _level_scalars(level_num: int):
+        """Return (hp_mult, speed_mult) based on visible level number."""
+        if 7 <= level_num <= 11:
+            return 3.0, 1.3   # 3x HP, 30% faster
+        if 13 <= level_num <= 17:
+            return 4.0, 1.6   # 4x HP, 60% faster
+        return 1.0, 1.0
+
+    def _apply_level_scaling(enemies_list, level_num: int):
+        hp_mult, spd_mult = _level_scalars(level_num)
+        if hp_mult == 1.0 and spd_mult == 1.0:
+            return
+        for e in enemies_list:
+            # HP scale
+            try:
+                e.hp = int(math.ceil(e.hp * hp_mult))
+            except Exception:
+                pass
+            # Move speed scale
+            try:
+                e.speed *= spd_mult
+            except Exception:
+                pass
+            # Make slimes hop a bit more often when "faster"
+            try:
+                if getattr(e, "is_slime", False) and getattr(e, "hop_cooldown", None) is not None:
+                    e.hop_cooldown = max(300, int(e.hop_cooldown / spd_mult))
+            except Exception:
+                pass
+
     screen_width, screen_height = win.get_size()
     offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
     offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
@@ -380,7 +503,10 @@ def run_game(screen=None, difficulty: str = "normal"):
         if pick:
             ptype = str(pick.get("type", "")).lower()
             if ptype == "damage":
-                sword_damage += int(pick.get("amount", 0))
+                amt = int(pick.get("amount", 0))
+                sword_damage += amt
+                # NEW: also empower player projectiles (e.g., the_descender's sunball)
+                projectile_damage_bonus += amt
             elif ptype == "attackspeed":
                 try:
                     amt = float(pick.get("amount", 0.2))
@@ -414,7 +540,9 @@ def run_game(screen=None, difficulty: str = "normal"):
         chooser_elapsed_pending = 0
 
     # spawn enemies
-    enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+    enemies = spawn_enemies(game_map, count=enemy_count_for_level(level_number, is_boss_level), tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+    # NEW: scale newly spawned enemies by level
+    _apply_level_scaling(enemies, level_number)
     # preload sounds
     try: sounds.preload('HitSound')
     except Exception: pass
@@ -422,6 +550,138 @@ def run_game(screen=None, difficulty: str = "normal"):
     except Exception: pass
     try: sounds.preload('Dash')
     except Exception: pass
+
+    # NEW: level transition state (auto when all enemies dead)
+    level_transitioning = False
+    game_finished = False  # NEW: flag when all maps used
+
+    def do_map_transition():
+        nonlocal game_map, floor_choices, x, y, pressed_dirs, is_dashing, frame_index, enemies, spawn_grace_timer, level_transitioning, vel, dash_speed, attack_cooldown, stamina_regen_rate, sword_damage, projectile_damage_bonus, shield_count, poison_level, game_finished, level_number, is_boss_level, normal_levels_completed
+        if level_transitioning or game_finished:
+            return
+        level_transitioning = True
+        try:
+            snap = win.copy()
+        except Exception:
+            snap = None
+        elapsed_here = 0
+        # Powerup selection (same as before)
+        try:
+            was_playing = False
+            try:
+                was_playing = pygame.mixer.music.get_busy()
+                if was_playing:
+                    pygame.mixer.music.pause()
+            except Exception:
+                pass
+            try:
+                sounds.preload('LevelUp')
+                sounds.play_sfx('LevelUp')
+            except Exception:
+                pass
+            pick, elapsed_here = powerups.choose_powerup(snap, win)
+            try:
+                if was_playing:
+                    pygame.mixer.music.stop()
+                    try:
+                        globals()['_game_music_started'] = False
+                        _start_play_music()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            elapsed_here = int(elapsed_here or 0)
+            if pick:
+                ptype = str(pick.get("type", "")).lower()
+                if ptype == "damage":
+                    sword_damage += int(pick.get("amount", 0))
+                    # NEW: also empower player projectiles (e.g., the_descender's sunball)
+                    projectile_damage_bonus += int(pick.get("amount", 0))
+                elif ptype == "attackspeed":
+                    try:
+                        amt = float(pick.get("amount", 0.2))
+                        attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                    except Exception:
+                        pass
+                elif ptype == "dashspeed":
+                    try:
+                        amt = float(pick.get("amount", 0.2))
+                        if stamina_regen_rate > 0:
+                            stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
+                    except Exception:
+                        pass
+                elif ptype == "speed":
+                    try:
+                        walk_mult = float(pick.get("walk_mult", 0.25))
+                        dash_mult = float(pick.get("dash_mult", 0.20))
+                        vel = vel * (1.0 + walk_mult)
+                        dash_speed = dash_speed * (1.0 + dash_mult)
+                    except Exception:
+                        pass
+                elif ptype == "shield":
+                    shield_count += int(pick.get("amount", 1))
+                elif ptype == "poison":
+                    try:
+                        poison_level += int(pick.get("amount", 1))
+                    except Exception:
+                        poison_level += 1
+        except Exception:
+            elapsed_here = 0
+
+        # Determine next level type
+        if is_boss_level:
+            # just finished a boss level
+            if normal_levels_completed >= 15:
+                game_finished = True
+                level_transitioning = False
+                return
+            next_is_boss = False
+        else:
+            # just finished a normal level
+            normal_levels_completed += 1
+            next_is_boss = normal_levels_completed in (5, 10, 15)
+
+        if next_is_boss:
+            res = get_boss_map()
+        else:
+            res = pick_normal_map()
+            if res is None:
+                # No more normal maps left (should only happen after collecting all 15)
+                game_finished = True
+                level_transitioning = False
+                return
+        game_map, floor_choices = res
+        level_number += 1  # increment visible level count (includes boss levels)
+        is_boss_level = next_is_boss
+
+        # Reset player state & spawn enemies
+        x = offset_x + (WIDTH // 2) * TILE_SIZE
+        y = offset_y + 1 * TILE_SIZE
+        pressed_dirs.clear()
+        is_dashing = False
+        frame_index = 0
+        enemies = []
+        if is_boss_level:
+            try:
+                enemies = spawn_enemies(game_map, count=1, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=64, speed=1.2, kind="zombie")
+                if enemies:
+                    # center boss (approximate)
+                    mid_x = offset_x + (WIDTH // 2) * TILE_SIZE
+                    mid_y = offset_y + (HEIGHT // 2) * TILE_SIZE
+                    e0 = enemies[0]
+                    try:
+                        e0.x = mid_x
+                        e0.y = mid_y
+                    except Exception:
+                        pass
+            except Exception:
+                enemies = []
+        else:
+            enemies = spawn_enemies(game_map, count=enemy_count_for_level(level_number, is_boss_level), tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+        # NEW: scale newly spawned enemies by (new) level_number
+        _apply_level_scaling(enemies, level_number)
+        spawn_grace_timer = 1500 + int(elapsed_here)
+        level_transitioning = False
 
     # --- DEATH PARTICLES SYSTEM ---
     # Each particle: {'x','y','vx','vy','size','color',(optional) 'life_ms'}
@@ -581,8 +841,14 @@ def run_game(screen=None, difficulty: str = "normal"):
                 font_path = cand
                 break
         dmg_font = pygame.font.Font(font_path, 22) if font_path else pygame.font.SysFont("arial", 22, bold=True)
+        # NEW: level font (smaller)
+        level_font = pygame.font.Font(font_path, 24) if font_path else pygame.font.SysFont("arial", 24, bold=True)
     except Exception:
         dmg_font = None
+        try:
+            level_font = pygame.font.SysFont("arial", 24, bold=True)
+        except Exception:
+            level_font = None
     while run:
         dt = clock.tick(60)
 
@@ -625,6 +891,11 @@ def run_game(screen=None, difficulty: str = "normal"):
 
             # Track movement key presses/releases to determine facing priority
             if event.type == pygame.KEYDOWN:
+                # Weapon switching (keys 1-5)
+                if event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
+                    new_idx = event.key - pygame.K_1
+                    if new_idx != current_weapon_index:
+                        load_weapon(new_idx)
                 if event.key in key_to_dir:
                     d = key_to_dir[event.key]
                     if d in pressed_dirs:
@@ -675,86 +946,6 @@ def run_game(screen=None, difficulty: str = "normal"):
                 if res and res[0] == "menu":
                     return
 
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_e:
-                game_map, floor_choices = pick_map()
-                x = offset_x + (WIDTH // 2) * TILE_SIZE
-                y = offset_y + 1 * TILE_SIZE
-                pressed_dirs.clear()
-                is_dashing = False
-                frame_index = 0
-                # --- SHOW POWERUP SELECTION AGAIN ON MAP CHANGE ---
-                try:
-                    snap = win.copy()
-                except Exception:
-                    snap = None
-                elapsed_here = 0
-                try:
-                    # pause/stop music while powerup menu is active
-                    was_playing = False
-                    try:
-                        was_playing = pygame.mixer.music.get_busy()
-                        if was_playing:
-                            pygame.mixer.music.pause()
-                    except Exception:
-                        pass
-                    # play LevelUp sound again when menu opens
-                    try:
-                        sounds.preload('LevelUp')
-                        sounds.play_sfx('LevelUp')
-                    except Exception:
-                        pass
-                    pick, elapsed_here = powerups.choose_powerup(snap, win)
-                    # resume music afterwards
-                    try:
-                        if was_playing:
-                            pygame.mixer.music.stop()
-                            try:
-                                globals()['_game_music_started'] = False
-                                _start_play_music()
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    elapsed_here = int(elapsed_here or 0)
-                    # apply powerup effects
-                    if pick:
-                        ptype = str(pick.get("type", "")).lower()
-                        if ptype == "damage":
-                            sword_damage += int(pick.get("amount", 0))
-                        elif ptype == "attackspeed":
-                            try:
-                                amt = float(pick.get("amount", 0.2))
-                                attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
-                            except Exception:
-                                pass
-                        elif ptype == "dashspeed":
-                            try:
-                                amt = float(pick.get("amount", 0.2))
-                                if stamina_regen_rate > 0:
-                                    stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
-                            except Exception:
-                                pass
-                        elif ptype == "speed":
-                            try:
-                                walk_mult = float(pick.get("walk_mult", 0.25))
-                                dash_mult = float(pick.get("dash_mult", 0.20))
-                                vel = vel * (1.0 + walk_mult)
-                                dash_speed = dash_speed * (1.0 + dash_mult)
-                            except Exception:
-                                pass
-                        elif ptype == "shield":
-                            shield_count += int(pick.get("amount", 1))
-                        elif ptype == "poison":
-                            try:
-                                poison_level += int(pick.get("amount", 1))
-                            except Exception:
-                                poison_level += 1
-                except Exception:
-                    elapsed_here = 0
-                enemies = spawn_enemies(game_map, count=6, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
-                # grant temporary grace period after respawn / map change (1.5s) and account for chooser time
-                spawn_grace_timer = 1500 + elapsed_here
-
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 if not is_dashing and stamina >= 1.0:
                     # Determine dash direction from current key state; fallback to last_direction
@@ -803,6 +994,30 @@ def run_game(screen=None, difficulty: str = "normal"):
                     player_center = (px, py)
                     swing_start_angle = math.degrees(math.atan2(my - py, mx - px))
                     attack_hits.clear()
+                    # NEW: spawn projectile (for weapons like The Descender)
+                    if current_weapon.projectile_damage > 0 and current_projectile_img:
+                        dxp = mx - px
+                        dyp = my - py
+                        dist = math.hypot(dxp, dyp) or 1.0
+                        dxn = dxp / dist
+                        dyn = dyp / dist
+                        speed = current_weapon.projectile_speed  # pixels / second
+                        proj_life = current_weapon.projectile_life_ms
+                        # small forward offset so it doesn't instantly collide with player
+                        start_offset = 28
+                        sx = px + dxn * start_offset
+                        sy = py + dyn * start_offset
+                        player_projectiles.append({
+                            'x': sx,
+                            'y': sy,
+                            'vx': dxn * speed,
+                            'vy': dyn * speed,
+                            'life': proj_life,
+                            # NEW: base projectile damage + accumulated bonus from powerups
+                            'damage': current_weapon.projectile_damage + projectile_damage_bonus,
+                            'img': current_projectile_img,
+                            'radius': max(10, current_projectile_img.get_width() // 2)
+                        })
 
         # --- APPLY PLAYER KNOCKBACK (if active) ---
         knocked = False
@@ -991,6 +1206,15 @@ def run_game(screen=None, difficulty: str = "normal"):
 
         win.fill((0, 0, 0))
         draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
+        # NEW: draw level indicator above HUD
+        try:
+            if level_font and level_number > 0:
+                txt = level_font.render(f"Level {level_number}", True, (255, 255, 255))
+                top_y = max(10, offset_y - 100)
+                cx = offset_x + (WIDTH * TILE_SIZE) // 2 - txt.get_width() // 2
+                win.blit(txt, (cx, top_y))
+        except Exception:
+            pass
         draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
         # draw/update death particle debris (map-grounded)
         update_and_draw_particles(dt, win)
@@ -1074,8 +1298,27 @@ def run_game(screen=None, difficulty: str = "normal"):
         # Update enemies
         for e in enemies:
             if e.alive:
-                # pass callbacks; per-enemy view logic lives inside Enemy.update
                 e.update(dt, player_center, make_is_walkable(e.size), on_trap, is_lava, is_wall)
+            # --- Bleed processing (if any weapon applied bleed) ---
+            if getattr(e, 'bleed_time', 0) > 0 and e.alive:
+                e.bleed_time -= dt
+                e.bleed_tick_timer = getattr(e, 'bleed_tick_timer', 0) - dt
+                if e.bleed_tick_timer <= 0:
+                    e.bleed_tick_timer = getattr(e, 'bleed_interval', 100)
+                    # apply 1 damage (true damage style)
+                    try:
+                        # removed unexpected 'show_damage' kwarg so apply_damage actually runs
+                        e.apply_damage(1, kb_x=0, kb_y=0, kb_force=0, kb_duration=0)
+                    except Exception:
+                        # fallback: prefer 'hp' over 'health'
+                        try:
+                            if hasattr(e, 'hp'):
+                                e.hp -= 1
+                            else:
+                                e.health -= 1
+                        except Exception:
+                            pass
+
         # Collect damage events from enemies after update
         for e in enemies:
             try:
@@ -1097,11 +1340,20 @@ def run_game(screen=None, difficulty: str = "normal"):
                     spawn_death_particles(e)
                 except Exception:
                     pass
-                # clear the marker so we only spawn once
                 try:
                     e._died_this_frame = False
                 except Exception:
                     pass
+
+        # NEW: auto transition when all enemies are dead
+        if not level_transitioning:
+            try:
+                if enemies and all((not en.alive) for en in enemies):
+                    do_map_transition()
+            except Exception:
+                pass
+        if game_finished:
+            return  # exit game loop after final map
 
         # Draw enemies
         for e in enemies:
@@ -1117,6 +1369,100 @@ def run_game(screen=None, difficulty: str = "normal"):
                         win.blit(icon, rect.topleft)
                     except Exception:
                         pass
+
+        # === PLAYER PROJECTILES (The Descender: sunball) ===
+        if player_projectiles:
+            updated_proj = []
+            for p in player_projectiles:
+                # advance
+                p['life'] -= dt
+                if p['life'] <= 0:
+                    continue
+                p['x'] += p['vx'] * (dt / 1000.0)
+                p['y'] += p['vy'] * (dt / 1000.0)
+
+                cx = p['x']
+                cy = p['y']
+                # only remove if out of bounds; allow passing through walls, traps, lava
+                tile_x = int((cx - offset_x) // TILE_SIZE)
+                tile_y = int((cy - offset_y) // TILE_SIZE)
+                if tile_x < 0 or tile_x >= WIDTH or tile_y < 0 or tile_y >= HEIGHT:
+                    continue
+                # NOTE: no wall collision check here so sunball goes through walls/traps/lava
+                # if game_map[tile_y][tile_x] in WALL_TILES:
+                #     continue
+
+                # collide with enemies
+                hit_enemy = False
+                for e in enemies:
+                    if not getattr(e, "alive", True):
+                        continue
+                    ex = e.x + e.size / 2
+                    ey = e.y + e.size / 2
+                    dist = math.hypot(ex - cx, ey - cy)
+                    if dist <= p['radius'] + e.size * 0.45:
+                        # apply damage + modest knockback along projectile direction
+                        try:
+                            dir_len = math.hypot(p['vx'], p['vy']) or 1.0
+                            nx = p['vx'] / dir_len
+                            ny = p['vy'] / dir_len
+                            e.apply_damage(p['damage'], kb_x=nx, kb_y=ny, kb_force=42, kb_duration=140)
+                        except Exception:
+                            # fallback: prefer 'hp' over 'health'
+                            try:
+                                if hasattr(e, 'hp'):
+                                    e.hp -= p['damage']
+                                else:
+                                    e.health -= p['damage']
+                            except Exception:
+                                pass
+                        # bleed / stun / poison inheritance (reuse current weapon effects)
+                        if getattr(current_weapon, 'stun_ms', 0) > 0:
+                            try: e.stun_timer = max(getattr(e, 'stun_timer', 0), current_weapon.stun_ms)
+                            except Exception: pass
+                        if getattr(current_weapon, 'bleed_duration_ms', 0) > 0 and getattr(current_weapon, 'bleed_interval_ms', 0) > 0:
+                            try:
+                                e.bleed_time = current_weapon.bleed_duration_ms
+                                e.bleed_interval = current_weapon.bleed_interval_ms
+                                e.bleed_tick_timer = 0
+                            except Exception:
+                                pass
+                        if poison_level > 0:
+                            try: e.apply_poison(poison_level)
+                            except Exception: pass
+                        try: sounds.play_sfx('HitSound')
+                        except Exception: pass
+                        hit_enemy = True
+                        break
+                if hit_enemy:
+                    continue
+
+                updated_proj.append(p)
+            player_projectiles = updated_proj
+
+        # Draw enemies
+        for e in enemies:
+            if e.alive:
+                e.draw(win)
+                # Stun indicator overlay using stunned.png above enemy while stunned
+                if getattr(e, 'stun_timer', 0) > 0 and stunned_img is not None:
+                    try:
+                        icon = stunned_img
+                        cx = int(e.x + e.size/2)
+                        top = int(e.y) - 10
+                        rect = icon.get_rect(center=(cx, top))
+                        win.blit(icon, rect.topleft)
+                    except Exception:
+                        pass
+        # Draw player projectiles after enemies (so they appear above ground but below player)
+        if player_projectiles:
+            for p in player_projectiles:
+                img = p.get('img')
+                if img:
+                    rect = img.get_rect(center=(int(p['x']), int(p['y'])))
+                    win.blit(img, rect.topleft)
+                else:
+                    pygame.draw.circle(win, (255, 200, 80), (int(p['x']), int(p['y'])), p['radius'])
 
         # --- NEW: enemy projectiles can hit the player (mage magic) ---
         # use player_center computed from previous frame; handle once per frame
@@ -1288,74 +1634,159 @@ def run_game(screen=None, difficulty: str = "normal"):
             progress = 1 - (attack_timer / attack_duration)  # 0 → 1
             current_angle = swing_start_angle - swing_arc/2 + swing_arc * progress
 
-            radius = 50
-            sword_center_x = px + radius * math.cos(math.radians(current_angle))
-            sword_center_y = py + radius * math.sin(math.radians(current_angle))
+            # --- Dagger (arc=0) uses a thrust animation: radius grows with progress ---
+            if swing_arc == 0:
+                # Ease-out thrust (fast out, tiny retract at very end)
+                thrust_out = min(1.0, progress * 1.15)
+                ease = 1 - (1 - thrust_out) * (1 - thrust_out)
+                max_len = 68
+                base_len = 12
+                current_len = base_len + ease * (max_len - base_len)
+                # slight retract during last 10% for visual snap
+                if progress > 0.9:
+                    retract = (progress - 0.9) / 0.1
+                    current_len -= retract * 10
+                sword_center_x = px + current_len * math.cos(math.radians(swing_start_angle))
+                sword_center_y = py + current_len * math.sin(math.radians(swing_start_angle))
+            else:
+                radius = 50
+                sword_center_x = px + radius * math.cos(math.radians(current_angle))
+                sword_center_y = py + radius * math.sin(math.radians(current_angle))
 
-            rotated_sword = pygame.transform.rotate(sword_img, -current_angle)
+            rotated_sword = pygame.transform.rotate(sword_img, - (swing_start_angle if swing_arc == 0 else current_angle))
             rect = rotated_sword.get_rect(center=(sword_center_x, sword_center_y))
             win.blit(rotated_sword, rect.topleft)
 
-            # Hit detection (accurate enough): check each alive enemy center against arc and reach
-            sword_reach = 64  # effective reach in pixels from player center
-            for e in enemies:
-                if not e.alive:
-                    continue
-                eid = id(e)
-                if eid in attack_hits:
-                    continue
-                # enemy center
-                ecx = e.x + e.size / 2
-                ecy = e.y + e.size / 2
-                vx = ecx - px
-                vy = ecy - py
-                dist = math.hypot(vx, vy)
-                # allow hit if enemy rectangle intersects reach circle (account for enemy size)
-                if dist > sword_reach + (e.size / 2):
-                    continue
-                # angle to enemy (degrees)
-                ang = math.degrees(math.atan2(vy, vx))
-                diff = (ang - current_angle + 180) % 360 - 180
-                if abs(diff) <= (swing_arc / 2):
-                    # line-of-sight check: sample along ray from player to enemy and ensure no wall tile blocks it.
-                    # Relax near-enemy: ignore walls within ~60% of enemy size from their center.
-                    los_clear = True
-                    if not getattr(e, "can_fly", False):
-                        if dist > 1e-4:
-                            dirx = vx / dist
-                            diry = vy / dist
-                            step = 8
-                            steps = max(1, int(dist // step))
-                            for s in range(1, steps + 1):
-                                sx = px + dirx * (s * step)
-                                sy = py + diry * (s * step)
-                                # stop checking walls when very close to the enemy center
-                                if math.hypot(ecx - sx, ecy - sy) <= (e.size * 0.6):
-                                    break
+            # Hit detection
+            sword_reach = 64
+            if swing_arc == 0:
+                # Segment from player (start) to current tip; enemy treated as circle.
+                dx_dir = math.cos(math.radians(swing_start_angle))
+                dy_dir = math.sin(math.radians(swing_start_angle))
+                # match current_len used above (recalculate same way for consistency)
+                thrust_out = min(1.0, progress * 1.15)
+                ease = 1 - (1 - thrust_out) * (1 - thrust_out)
+                max_len = 68
+                base_len = 12
+                current_len = base_len + ease * (max_len - base_len)
+                if progress > 0.9:
+                    retract = (progress - 0.9) / 0.1
+                    current_len -= retract * 10
+                # collision thickness (half-width) grows a bit mid-thrust for leniency
+                thickness = 10 + 8 * (1 - abs(0.5 - progress) * 2)  # peak mid thrust
+                for e in enemies:
+                    if not e.alive:
+                        continue
+                    eid = id(e)
+                    if eid in attack_hits:
+                        continue
+                    ecx = e.x + e.size / 2
+                    ecy = e.y + e.size / 2
+                    # vector to enemy
+                    vx = ecx - px
+                    vy = ecy - py
+                    proj = vx * dx_dir + vy * dy_dir
+                    if proj < 0 or proj > current_len + e.size * 0.35:
+                        continue
+                    # perpendicular distance to segment line
+                    perp_x = vx - proj * dx_dir
+                    perp_y = vy - proj * dy_dir
+                    perp_dist = math.hypot(perp_x, perp_y)
+                    # allowable distance: weapon thickness + enemy radius factor
+                    if perp_dist <= thickness + e.size * 0.30:
+                        # simple LOS: sample a few points only if enemy not flying
+                        los_blocked = False
+                        if not getattr(e, 'can_fly', False):
+                            samples = int(max(1, proj // 12))
+                            for s in range(1, samples + 1):
+                                sx = px + dx_dir * (proj * s / samples)
+                                sy = py + dy_dir * (proj * s / samples)
                                 tx = int((sx - offset_x) // TILE_SIZE)
                                 ty = int((sy - offset_y) // TILE_SIZE)
                                 if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT:
-                                    los_clear = False
-                                    break
+                                    los_blocked = True; break
                                 if game_map[ty][tx] in WALL_TILES:
-                                    los_clear = False
-                                    break
-                        else:
-                            los_clear = True
-                    if not los_clear:
+                                    los_blocked = True; break
+                        if los_blocked:
+                            continue
+                        e.apply_damage(sword_damage, kb_x=dx_dir, kb_y=dy_dir, kb_force=38, kb_duration=110)
+                        if getattr(current_weapon, 'stun_ms', 0) > 0:
+                            try: e.stun_timer = max(getattr(e, 'stun_timer', 0), current_weapon.stun_ms)
+                            except Exception: pass
+                        # Apply bleed if weapon has bleed
+                        if getattr(current_weapon, 'bleed_duration_ms', 0) > 0 and getattr(current_weapon, 'bleed_interval_ms', 0) > 0:
+                            try:
+                                e.bleed_time = current_weapon.bleed_duration_ms
+                                e.bleed_interval = current_weapon.bleed_interval_ms
+                                e.bleed_tick_timer = 0  # trigger tick next frame
+                            except Exception:
+                                pass
+                        if poison_level > 0:
+                            try: e.apply_poison(poison_level)
+                            except Exception: pass
+                        try: sounds.play_sfx('HitSound')
+                        except Exception: pass
+                        attack_hits.add(eid)
+            else:
+                for e in enemies:
+                    if not e.alive:
                         continue
-                    # hit: deal damage and apply knockback away from player
-                    e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
-                    # apply poison stacks if any were selected
-                    if poison_level > 0:
-                        try:
-                            e.apply_poison(poison_level)
-                        except Exception:
-                            pass
-                    try: sounds.play_sfx('HitSound')
-                    except Exception: pass
-                    attack_hits.add(eid)
+                    eid = id(e)
+                    if eid in attack_hits:
+                        continue
+                    ecx = e.x + e.size / 2
+                    ecy = e.y + e.size / 2
+                    vx = ecx - px
+                    vy = ecy - py
+                    dist = math.hypot(vx, vy)
+                    if dist > sword_reach + (e.size / 2):
+                        continue
+                    ang = math.degrees(math.atan2(vy, vx))
+                    diff = (ang - current_angle + 180) % 360 - 180
+                    if abs(diff) <= (swing_arc / 2):
+                        los_clear = True
+                        if not getattr(e, 'can_fly', False):
+                            if dist > 1e-4:
+                               
+                                dirx = vx / dist
+                                diry = vy / dist
+                                step = 8
+                                steps = max(1, int(dist // step))
+                                for s in range(1, steps + 1):
+                                    sx = px + dirx * (s * step)
+                                    sy = py + diry * (s * step)
+                                    if math.hypot(ecx - sx, ecy - sy) <= (e.size * 0.6):
+                                        break
+                                    tx = int((sx - offset_x) // TILE_SIZE)
+                                    ty = int((sy - offset_y) // TILE_SIZE)
+                                    if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT:
+                                        los_clear = False; break
+                                    if game_map[ty][tx] in WALL_TILES:
+                                        los_clear = False; break
+                            else:
+                                los_clear = True
+                        if not los_clear:
+                            continue
+                        e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
+                        if getattr(current_weapon, 'stun_ms', 0) > 0:
+                            try: e.stun_timer = max(getattr(e, 'stun_timer', 0), current_weapon.stun_ms)
+                            except Exception: pass
+                        # Apply bleed if weapon has bleed
+                        if getattr(current_weapon, 'bleed_duration_ms', 0) > 0 and getattr(current_weapon, 'bleed_interval_ms', 0) > 0:
+                            try:
+                                e.bleed_time = current_weapon.bleed_duration_ms
+                                e.bleed_interval = current_weapon.bleed_interval_ms
+                                e.bleed_tick_timer = 0
+                            except Exception:
+                                pass
+                        if poison_level > 0:
+                            try: e.apply_poison(poison_level)
+                            except Exception: pass
+                        try: sounds.play_sfx('HitSound')
+                        except Exception: pass
+                        attack_hits.add(eid)
 
+            # Projectile break logic unchanged below
             # --- New: allow sword to break mage projectiles ---
             # check every enemy projectile and remove if within swing arc+reach
             proj_reach = 48  # slightly shorter reach for projectiles
@@ -1435,6 +1866,7 @@ def run_game(screen=None, difficulty: str = "normal"):
             if hasattr(enemy, "projectiles"):
                 for proj in list(enemy.projectiles):
                     px_proj = proj.get("x", 0)
+
                     py_proj = proj.get("y", 0)
                     for i in range(shield_count):
                         angle = shield_angle + (2 * math.pi * i / shield_count)
@@ -1447,7 +1879,6 @@ def run_game(screen=None, difficulty: str = "normal"):
                             break
 
         pygame.display.update()
-
 # ======================
 # START GAME
 # ======================
