@@ -1,7 +1,7 @@
 import pygame
 from pathlib import Path
 import random
-import sounds  # added for selection SFX
+import sounds  # added for selection SFX and master volume
 
 # ensure MASTER_VOLUME exists
 try:
@@ -89,6 +89,7 @@ def choose_powerup(snapshot, screen_surface):
         sounds.preload('SelectSound')
     except Exception:
         pass
+
     # prepare overlay and title once
     overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 160))
@@ -135,6 +136,8 @@ def choose_powerup(snapshot, screen_surface):
         "attackspeed": "attackspeed_card.png",
         "dashspeed": "dashspeed_card.png",
         "speed": "speed_card.png",
+        "shield": "shield_card.png",  # NEW: shield card
+        "poison": "poison_card.png",  # NEW: poison card
     }
     for key, fname in keys_and_files.items():
         fp = base.joinpath("sprites", fname)
@@ -152,9 +155,11 @@ def choose_powerup(snapshot, screen_surface):
     # define candidate powerups
     pool = [
         {"id": "damage", "type": "damage", "amount": 5, "label": "+5 Damage"},
-        {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Speed"},
+        {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Recovery"},
         {"id": "dashspeed", "type": "dashspeed", "amount": 0.20, "label": "+20% Dash Recovery"},
-        {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"}
+        {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"},
+        {"id": "shield", "type": "shield", "amount": 1, "label": "+1 Rotating Shield"},
+        {"id": "poison", "type": "poison", "amount": 1, "label": "Poison Touch"},  # NEW
     ]
 
     # randomly pick three distinct cards to show
@@ -187,24 +192,30 @@ def choose_powerup(snapshot, screen_surface):
     # main event/draw loop (single, consistent loop)
     while True:
         for ev in pygame.event.get():
+            # Do NOT allow skip; QUIT picks a random card
             if ev.type == pygame.QUIT:
                 i = random.randint(0, 2)
                 pick = choices[i]
                 elapsed = pygame.time.get_ticks() - start_ticks
-                try: sounds.play_sfx('SelectSound')
-                except Exception: pass
+                try:
+                    sounds.play_sfx('SelectSound')
+                except Exception:
+                    pass
                 _apply_master_volume()
                 return pick, elapsed
             if ev.type == pygame.KEYDOWN:
-                pass  # ESC ignored intentionally
+                # ignore ESC so players must pick a card
+                pass
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 for i, r in enumerate(cards):
                     if r.collidepoint((mx, my)):
                         pick = choices[i]
                         elapsed = pygame.time.get_ticks() - start_ticks
-                        try: sounds.play_sfx('SelectSound')
-                        except Exception: pass
+                        try:
+                            sounds.play_sfx('SelectSound')
+                        except Exception:
+                            pass
                         _apply_master_volume()
                         return pick, elapsed
 

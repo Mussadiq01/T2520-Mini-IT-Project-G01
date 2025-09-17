@@ -1,9 +1,7 @@
 import pygame
 import sys
 from pathlib import Path
-import sounds  # added for click SFX
-
-pygame.font.init()
+import sounds  # added for click SFX and master volume
 
 # preload select sound once
 try:
@@ -20,22 +18,29 @@ except Exception:
 
 def _apply_master_volume():
     mv = getattr(sounds, 'MASTER_VOLUME', 1.0)
-    try: pygame.mixer.music.set_volume(mv)
-    except Exception: pass
+    try:
+        pygame.mixer.music.set_volume(mv)
+    except Exception:
+        pass
     try:
         chs = pygame.mixer.get_num_channels()
         for i in range(chs):
-            try: pygame.mixer.Channel(i).set_volume(mv)
-            except Exception: pass
-    except Exception: pass
+            try:
+                pygame.mixer.Channel(i).set_volume(mv)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-# wrap sounds.play_sfx if not yet wrapped here
+# wrap sounds.play_sfx once to re-apply master volume after play
 if not hasattr(sounds, '_orig_play_sfx_wrapped_pause'):
     try:
         sounds._orig_play_sfx_wrapped_pause = sounds.play_sfx
         def _wrapped_play_sfx(id_):
-            try: sounds._orig_play_sfx_wrapped_pause(id_)
-            except Exception: pass
+            try:
+                sounds._orig_play_sfx_wrapped_pause(id_)
+            except Exception:
+                pass
             _apply_master_volume()
         sounds.play_sfx = _wrapped_play_sfx
     except Exception:
@@ -43,6 +48,8 @@ if not hasattr(sounds, '_orig_play_sfx_wrapped_pause'):
 
 # apply once at import
 _apply_master_volume()
+
+pygame.font.init()
 
 def get_font(size):
 	# small helper - prefer bundled font if present
@@ -88,22 +95,30 @@ def show_pause_overlay(snapshot, screen_surface):
 			if ev.type == pygame.QUIT:
 				return ("menu", None)
 			if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-				try: sounds.play_sfx('SelectSound')
-				except Exception: pass
+				try:
+					sounds.play_sfx('SelectSound')
+				except Exception:
+					pass
 				return ("resume", None)
 			if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
 				mx,my = ev.pos
 				if resume_rect.collidepoint((mx,my)):
-					try: sounds.play_sfx('SelectSound')
-					except Exception: pass
+					try:
+						sounds.play_sfx('SelectSound')
+					except Exception:
+						pass
 					return ("resume", None)
 				if options_rect.collidepoint((mx,my)):
-					try: sounds.play_sfx('SelectSound')
-					except Exception: pass
+					try:
+						sounds.play_sfx('SelectSound')
+					except Exception:
+						pass
 					return ("options", None)
 				if quit_rect.collidepoint((mx,my)):
-					try: sounds.play_sfx('SelectSound')
-					except Exception: pass
+					try:
+						sounds.play_sfx('SelectSound')
+					except Exception:
+						pass
 					return ("menu", None)
 
 		screen_surface.blit(blurred, (0,0))
@@ -141,15 +156,18 @@ def show_death_screen(screen_surface):
 		# slightly smaller fonts so the title fits comfortably in the panel
 		title_f = get_font(40)
 		btn_f = get_font(20)
+
 		# stop any background music and play death SFX once
-		try: pygame.mixer.music.stop()
-		except Exception: pass
-		# Play specific death sound file: DeathSound
+		try:
+			pygame.mixer.music.stop()
+		except Exception:
+			pass
 		try:
 			sounds.preload('DeathSound')  # expects sounds/DeathSound.(ogg|mp3|wav)
 			sounds.play_sfx('DeathSound')
 		except Exception:
 			pass
+
 		# create a snapshot to darken background for effect
 		try:
 			snap = screen_surface.copy()
@@ -163,16 +181,22 @@ def show_death_screen(screen_surface):
 			mouse_pos = pygame.mouse.get_pos()
 			for ev in pygame.event.get():
 				if ev.type == pygame.QUIT:
+					# signal quit to menu
 					return ("menu", None)
 				if ev.type == pygame.KEYDOWN:
 					if ev.key == pygame.K_ESCAPE:
-						try: sounds.play_sfx('SelectSound')
-						except Exception: pass
+						try:
+							sounds.play_sfx('SelectSound')
+						except Exception:
+							pass
+						# treat ESC as quit to menu on death screen
 						return ("menu", None)
 				if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
 					if btn_rect.collidepoint(ev.pos):
-						try: sounds.play_sfx('SelectSound')
-						except Exception: pass
+						try:
+							sounds.play_sfx('SelectSound')
+						except Exception:
+							pass
 						return ("menu", None)
 
 			screen_surface.blit(blurred, (0,0))
