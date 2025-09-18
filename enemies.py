@@ -106,6 +106,8 @@ class Enemy:
         self.poison_green_duration = 140
         # damage event queue (collected by main each frame)
         self._damage_events: List[Dict[str, float]] = []
+        # NEW: kind tag for scoring
+        self.kind: str = "unknown"
 
     def rect(self) -> pygame.Rect:
         return pygame.Rect(int(self.x), int(self.y), self.size, self.size)
@@ -1087,6 +1089,7 @@ def spawn_enemies(
             ey = max(offset_y, min(ey, offset_y + HEIGHT * tile_size - s_size))
             e = Enemy(ex, ey, s_size, speed=s_speed, hp=s_hp, sprites=sprite_dict, can_jump_lava=False)
             e.is_slime = True
+            e.kind = "slime"  # NEW: tag for scoring
             # more measured hop cadence; start staggered so they don't all jump immediately
             e.hop_cooldown = 1200
             # bias initial hop timer to a shorter value so slimes will attempt a hop soon after spawning
@@ -1115,7 +1118,9 @@ def spawn_enemies(
             # clamp positions so ghosts don't end up partially outside the map
             ex = _clamp_pos(ex, g_size)
             ey = max(offset_y, min(ey, offset_y + HEIGHT * tile_size - g_size))
-            return Enemy(ex, ey, g_size, speed=g_speed, hp=g_hp, sprites=sprite_dict, can_fly=True)
+            e = Enemy(ex, ey, g_size, speed=g_speed, hp=g_hp, sprites=sprite_dict, can_fly=True)
+            e.kind = "ghost"  # NEW: tag for scoring
+            return e
         if kind_choice == "mage":
             m_size = enemy_size
             m_speed = max(0.6, speed * 0.8)  # Increased to be second fastest
@@ -1135,6 +1140,7 @@ def spawn_enemies(
                 projectile_speed=3.0,
                 cast_stop_distance=140
             )
+            e.kind = "mage"  # NEW: tag for scoring
             # attempt to load the single projectile PNG "mage_magic.png" from sprites/
             sprites_dir = Path(__file__).parent.joinpath("sprites")
             fp = sprites_dir.joinpath("mage_magic.png")
@@ -1158,8 +1164,9 @@ def spawn_enemies(
         ey = tly + (tile_size - z_size) / 2
         ex = _clamp_pos(ex, z_size)
         ey = max(offset_y, min(ey, offset_y + HEIGHT * tile_size - z_size))
-        return Enemy(ex, ey, z_size, speed=z_speed, hp=z_hp, sprites=sprite_dict)
-
+        e = Enemy(ex, ey, z_size, speed=z_speed, hp=z_hp, sprites=sprite_dict)
+        e.kind = "zombie"  # NEW: tag for scoring
+        return e
     # spawn the requested number of enemies at shuffled candidate locations
     for i in range(min(count, len(candidates))):
         tlx, tly = candidates[i]

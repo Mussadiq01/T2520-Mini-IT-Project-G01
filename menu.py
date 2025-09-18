@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import os
 import sounds  # added for click SFX and master volume
+import save    # NEW: save/load utilities
 
 # master volume helper (non-breaking; defaults to 1.0)
 try:
@@ -38,7 +39,12 @@ pygame.display.set_caption("Descend")
 is_fullscreen = True
 
 # player currency shown in shop (from other code)
-PLAYER_COINS = 10000
+# PLAYER_COINS now initialized from save.json (fallback to 0)
+try:
+    _data = save.load_player_data() or {}
+    PLAYER_COINS = int(_data.get("coins", 5000))  # UPDATED: default to 5000
+except Exception:
+    PLAYER_COINS = 5000  # UPDATED: default to 5000
 
 # Font helper
 def get_font(size):
@@ -352,6 +358,11 @@ def show_shop(snapshot, screen_surface):
     item_f = get_font(16)
     btn_f = get_font(20)
     clock_local = pygame.time.Clock()
+    # NEW: preload select sound for all shop buttons
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
 
     # load coin icon for top-right panel and set coins value
     base = Path(__file__).parent
@@ -367,7 +378,11 @@ def show_shop(snapshot, screen_surface):
         coin_img = pygame.Surface((36, 36), pygame.SRCALPHA)
         pygame.draw.circle(coin_img, (212, 175, 55), (18, 18), 16)
 
-    coins = PLAYER_COINS
+    # coins panel pulls from save so latest reward is shown
+    try:
+        coins = int((save.load_player_data() or {}).get("coins", PLAYER_COINS))  # uses 5000 default
+    except Exception:
+        coins = PLAYER_COINS
 
     # per-item descriptions (unique for each item) - make available for resolver
     weapons_desc = {
@@ -387,6 +402,27 @@ def show_shop(snapshot, screen_surface):
         "Leather": "Flexible and light; eases movement."
     }
 
+    # NEW: description resolver used by modal and bottom preview
+    def resolve_desc(item_name: str) -> str:
+        # prefer exact match
+        if item_name in weapons_desc:
+            return weapons_desc[item_name]
+        if item_name in armors_desc:
+            return armors_desc[item_name]
+        # substring match (e.g., variations like "Sword Mk II")
+        for k, v in weapons_desc.items():
+            if k and k in item_name:
+                return v
+        for k, v in armors_desc.items():
+            if k and k in item_name:
+                return v
+        # generic fallbacks
+        if any(tag in item_name for tag in ("Sword","Bow","Axe","Dagger","Spear","Katana","Mallet","Descender")):
+            return "A sharp blade. Effective at close range."
+        if any(tag in item_name for tag in ("Armor","Chestplate","Helmet","Shield","Boots","Greaves")):
+            return "Protective gear. Reduces incoming damage."
+        return "A reliable item."
+
     # items (placeholders)
     weapons = ["Sword", "Mallet", "Dagger", "Katana", "The Descender"]
     armors = ["Armor 1", "Armor 2", "Armor 3", "Armor 4", "Armor 5"]
@@ -395,32 +431,82 @@ def show_shop(snapshot, screen_surface):
     # First weapon (Sword) is already unlocked
     weapons_purchased = set(["Sword"])
     armors_purchased = set()
-    # track per-weapon upgrade levels (0..3)
-    weapons_upgrades = {name: 0 for name in weapons}
+    # UPDATED: levels -> 0 for unowned, Sword starts at 1
+    weapons_upgrades = {name: (1 if name == "Sword" else 0) for name in weapons}
 
-    # small helper to resolve a textual description for an item name consistently
-    def resolve_desc(item_name: str) -> str:
-        # prefer exact mapping first
-        if item_name in weapons_desc:
-            return weapons_desc[item_name]
-        if item_name in armors_desc:
-            return armors_desc[item_name]
-        # try substring matches (e.g. "Sword 1" -> "Sword")
-        for k, v in weapons_desc.items():
-            if k and k in item_name:
-                return v
-        for k, v in armors_desc.items():
-            if k and k in item_name:
-                return v
-        # fallback heuristic (keeps preview/modal consistent)
-        if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name:
-            return "A sharp blade. Effective at close range."
-        if "Armor" in item_name or "Chestplate" in item_name or "Helmet" in item_name or "Shield" in item_name or "Boots" in item_name or "Greaves" in item_name:
-            return "Protective gear. Reduces incoming damage."
-        return "A reliable item."
+    # NEW: load previously owned + equipped weapon from save.json
+    initial_equipped_idx = None
+    try:
+        saved = save.load_player_data() or {}
+        owned = saved.get("weapons_owned")
+        if isinstance(owned, list):
+            for w in owned:
+                if w in weapons:
+                    weapons_purchased.add(w)
+                    # ensure owned weapons are at least level 1
+                    weapons_upgrades[w] = max(1, weapons_upgrades.get(w, 0))
+        eq_name = (saved.get("equipped_weapon") or "").strip()
+        if eq_name in weapons:
+            initial_equipped_idx = weapons.index(eq_name)
+    except Exception:
+        pass
+
+    # NEW: helper to persist purchases into save.json
+    def persist_shop_state():
+        try:
+            data = save.load_player_data() or {}
+            data["weapons_owned"] = sorted(list(weapons_purchased))
+            # NEW: also persist upgrade levels
+            data["weapons_upgrades"] = {k: int(v) for k, v in weapons_upgrades.items()}
+            save.save_player_data(data)
+        except Exception:
+            pass
+
+    # NEW: helper to persist the equipped weapon
+    def persist_equipped_weapon(name: str):
+        try:
+            data = save.load_player_data() or {}
+            data["equipped_weapon"] = name
+            # ensure equipped is in owned
+            lst = set(data.get("weapons_owned") or [])
+            lst.add(name)
+            data["weapons_owned"] = sorted(lst)
+            save.save_player_data(data)
+        except Exception:
+            pass
+
+    # NEW: helper to persist coins
+    def persist_coins(value: int):
+        try:
+            data = save.load_player_data() or {}
+            data["coins"] = int(value)
+            save.save_player_data(data)
+        except Exception:
+            pass
+
+    # NEW: default-equip Sword if nothing was equipped yet (persist it)
+    if initial_equipped_idx is None:
+        try:
+            initial_equipped_idx = weapons.index("Sword")
+            persist_equipped_weapon("Sword")
+            # ensure Sword is level 1
+            weapons_upgrades["Sword"] = max(1, weapons_upgrades.get("Sword", 0))
+        except Exception:
+            initial_equipped_idx = 0
+
+    # Font for resolution display (smaller than other fonts)
+    res_font_local = get_font(11)
+
+    # Precompute panel & back rects so event handling can reference them
+    panel_w, panel_h = 700, 500
+    panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+    back_r = pygame.Rect(panel.right-100, panel.bottom-60, 80, 36)
+
+    clock_local = pygame.time.Clock()
 
     # Modal item detail view (shows large image, description, Buy/Back)
     def show_item_page(item_name: str, item_image: pygame.Surface):
+        nonlocal coins  # NEW: allow deducting coins on purchase
         sw2, sh2 = screen_surface.get_size()
         # build blurred background from the current screen for the modal
         try:
@@ -463,8 +549,18 @@ def show_shop(snapshot, screen_surface):
         # start purchased state from persistent sets so page reflects prior buys
         purchased = (item_name in weapons_purchased) or (item_name in armors_purchased)
         clock_modal = pygame.time.Clock()
-        # choose description & price heuristically from name
-        price = 50 if "Sword" in item_name or "Bow" in item_name or "Axe" in item_name or "Dagger" in item_name or "Spear" in item_name else 35 if "Armor" in item_name or "Chestplate" in item_name else 20
+        # UPDATED: all weapons cost 100 coins; armor pricing unchanged
+        weapon_price_map = {
+            "Sword": 0,             # already unlocked by default
+            "Mallet": 200,
+            "Dagger": 200,
+            "Katana": 400,
+            "The Descender": 1000
+        }
+        price = (weapon_price_map.get(item_name, 100)
+                 if item_name in weapons
+                 else 35 if "Armor" in item_name or "Chestplate" in item_name
+                 else 20)
 
         # resolve description using helper (consistent with bottom preview)
         desc = resolve_desc(item_name)
@@ -478,8 +574,37 @@ def show_shop(snapshot, screen_surface):
             else:
                 desc = "A reliable item."
  
+        # NEW: helper to know if this item is currently equipped (weapons only)
+        def _is_equipped() -> bool:
+            try:
+                return (item_name in weapons) and (weapons_equipped is not None) and (weapons[weapons_equipped] == item_name)
+            except Exception:
+                return False
+
+        # UPDATED: price helpers
+        gold = (212, 175, 55)
+        def _weapon_level() -> int:
+            try:
+                return int(weapons_upgrades.get(item_name, 0))
+            except Exception:
+                return 0
+        def _next_upgrade_cost(cur_level: int) -> int | None:
+            # Lv1->2:100, Lv2->3:200, Lv3->4:300
+            ladder = [100, 200, 300]
+            if 1 <= cur_level <= 3:
+                return ladder[cur_level - 1]
+            return None
+        # NEW: next-upgrade effect preview (+3, +4, +5 damage)
+        def _next_upgrade_bonus(cur_level: int) -> int | None:
+            ladder = {1: 3, 2: 4, 3: 5}
+            return ladder.get(cur_level)
+
         while True:
             dtm = clock_modal.tick(60)
+            # NEW: precompute action rects before event handling (so clicks work this frame)
+            equip_rect = pygame.Rect(panel.left + 40, panel.bottom - 80, 140, 48)
+            upgrade_rect = pygame.Rect(panel.left + 200, panel.bottom - 80, 140, 48)
+
             for ev2 in pygame.event.get():
                 if ev2.type == pygame.QUIT:
                     return ("menu", None)
@@ -489,34 +614,85 @@ def show_shop(snapshot, screen_surface):
                     mx2,my2 = ev2.pos
                     if not purchased:
                         if buy_rect.collidepoint((mx2,my2)):
-                            # mark as purchased — persist to outer shop state
-                            purchased = True
-                            # add to the correct purchased set depending on which list contains the item
-                            try:
-                                if item_name in weapons:
-                                    weapons_purchased.add(item_name)
-                                elif item_name in armors:
-                                    armors_purchased.add(item_name)
-                            except Exception:
-                                # fallback: treat as weapon
-                                weapons_purchased.add(item_name)
+                            # UPDATED: use per-weapon buy price mapping
+                            if item_name in weapons:
+                                cost = weapon_price_map.get(item_name, 100)
+                                if coins >= cost:
+                                    coins -= cost
+                                    persist_coins(coins)
+                                    try:
+                                        weapons_purchased.add(item_name)
+                                        weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))  # start at Lv1
+                                        persist_shop_state()
+                                    except Exception:
+                                        weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))
+                                    try: sounds.play_sfx('SelectSound')
+                                    except Exception: pass
+                                    purchased = True
+                                else:
+                                    try: sounds.play_sfx('SelectSound')
+                                    except Exception: pass
+                            else:
+                                # non-weapon purchase flow unchanged
+                                purchased = True
+                                try:
+                                    if item_name in weapons:
+                                        weapons_purchased.add(item_name)
+                                        weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))
+                                        persist_shop_state()
+                                except Exception:
+                                    pass
+                                try: sounds.play_sfx('SelectSound')
+                                except Exception: pass
                         elif back_rect.collidepoint((mx2,my2)):
+                            # NEW: click SFX
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             return ("back", None)
                     else:
-                        # after purchase show Equip / Upgrade buttons (handled below) — clicks return action
+                        # after purchase show Equip / Upgrade buttons
                         if equip_rect.collidepoint((mx2,my2)):
-                            # ensure equipped items are considered purchased as well
-                            try:
-                                if item_name in weapons:
-                                    weapons_purchased.add(item_name)
-                                elif item_name in armors:
-                                    armors_purchased.add(item_name)
-                            except Exception:
-                                weapons_purchased.add(item_name)
-                            return ("equip", item_name)
+                            # UPDATED: disable click when already equipped
+                            if _is_equipped():
+                                try: sounds.play_sfx('SelectSound')
+                                except Exception: pass
+                            else:
+                                try:
+                                    if item_name in weapons:
+                                        weapons_purchased.add(item_name)
+                                        persist_shop_state()
+                                        persist_equipped_weapon(item_name)
+                                    elif item_name in armors:
+                                        armors_purchased.add(item_name)
+                                except Exception:
+                                    pass
+                                try: sounds.play_sfx('SelectSound')
+                                except Exception: pass
+                                return ("equip", item_name)
                         if upgrade_rect.collidepoint((mx2,my2)):
-                            return ("upgrade", item_name)
+                            # UPDATED: apply upgrade prices 100, 200, 300 with coin deduction
+                            if item_name in weapons:
+                                cur = _weapon_level()
+                                next_cost = _next_upgrade_cost(cur)
+                                if cur < 4 and next_cost is not None and coins >= next_cost:
+                                    coins -= next_cost
+                                    persist_coins(coins)
+                                    try:
+                                        weapons_upgrades[item_name] = min(4, cur + 1)
+                                        persist_shop_state()
+                                    except Exception:
+                                        weapons_upgrades[item_name] = min(4, cur + 1)
+                                    try: sounds.play_sfx('SelectSound')
+                                    except Exception: pass
+                                else:
+                                    try: sounds.play_sfx('SelectSound')
+                                    except Exception: pass
+                            else:
+                                try: sounds.play_sfx('SelectSound')
+                                except Exception: pass
                         if back_rect.collidepoint((mx2,my2)):
+                            try: sounds.play_sfx('SelectSound')
+                            except Exception: pass
                             return ("back", None)
 
             # draw modal
@@ -551,35 +727,54 @@ def show_shop(snapshot, screen_surface):
             for i, line in enumerate(wrapped[:max_lines]):
                 surf = body_font.render(line, True, (200,200,200))
                 screen_surface.blit(surf, (tx, ty + i * (body_font.get_linesize() + 2)))
-            # price line under wrapped description (or after them)
+            # price/upgrade line under description (gold)
             price_y = ty + (min(len(wrapped), max_lines)) * (body_font.get_linesize() + 2) + 8
-            p_surf = body_font.render(f"Price: {price} gold", True, (200,200,200))
+            if not purchased:
+                # UPDATED: show per-weapon buy price
+                price_text = f"Price: {price} coins"
+            else:
+                if item_name in weapons:
+                    cur = _weapon_level()
+                    nxt = _next_upgrade_cost(cur)
+                    price_text = "Max Level" if cur >= 4 or nxt is None else f"Upgrade: {nxt} coins"
+                else:
+                    price_text = "Purchased"
+            p_surf = body_font.render(price_text, True, gold)
             screen_surface.blit(p_surf, (tx, price_y))
 
-            # buttons: show Buy + Back initially; after purchase show Equip + Upgrade + Back
+            # NEW: show what the upgrade will do (only for weapons with a next level)
+            if purchased and item_name in weapons:
+                cur_lvl = _weapon_level()
+                bonus = _next_upgrade_bonus(cur_lvl)
+                if bonus is not None:
+                    eff_color = (120, 220, 140)
+                    eff_surf = body_font.render(f"Next upgrade: +{bonus} Damage", True, eff_color)
+                    screen_surface.blit(eff_surf, (tx, price_y + body_font.get_linesize() + 4))
+
+            # buttons
             if not purchased:
                 pygame.draw.rect(screen_surface, (200,200,200), buy_rect)
                 buy_color = (0,200,0) if buy_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
                 screen_surface.blit(small_font.render("Buy", True, buy_color), small_font.render("Buy", True, buy_color).get_rect(center=buy_rect.center))
             else:
-                # post-purchase actions: Equip and Upgrade
-                equip_rect = pygame.Rect(panel.left + 40, panel.bottom - 80, 140, 48)
-                upgrade_rect = pygame.Rect(panel.left + 200, panel.bottom - 80, 140, 48)
                 pygame.draw.rect(screen_surface, (200,200,200), equip_rect)
                 pygame.draw.rect(screen_surface, (200,200,200), upgrade_rect)
-                eq_col = (0,200,0) if equip_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
-
-                # determine current upgrade level (weapons only)
+                # UPDATED: show "Equipped" label if equipped, "Equip" otherwise
+                if _is_equipped():
+                    eq_label = "Equipped"
+                    eq_col = (80,80,80)
+                else:
+                    eq_label = "Equip"
+                    eq_col = (0,200,0) if equip_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
                 cur_level = weapons_upgrades.get(item_name, 0) if item_name in weapons_upgrades else 0
-                # Upgrade button label and enabled state
-                if cur_level >= 3:
+                # UPDATED: cap at level 4; button text fixed to "Upgrade"
+                if cur_level >= 4:
                     up_label = "Max"
                     up_col = (80,80,80)
                 else:
-                    up_label = "Upgrade"
+                    up_label = "Upgrade"  # CHANGED: remove bonus tag in label
                     up_col = (0,200,0) if upgrade_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
-
-                screen_surface.blit(small_font.render("Equip", True, eq_col), small_font.render("Equip", True, eq_col).get_rect(center=equip_rect.center))
+                screen_surface.blit(small_font.render(eq_label, True, eq_col), small_font.render(eq_label, True, eq_col).get_rect(center=equip_rect.center))
                 screen_surface.blit(small_font.render(up_label, True, up_col), small_font.render(up_label, True, up_col).get_rect(center=upgrade_rect.center))
 
             # Back button (always present)
@@ -637,7 +832,7 @@ def show_shop(snapshot, screen_surface):
     armors_selected = 0
     focused_row = "weapons"  # or "armors"
     # equipped indices (None == nothing equipped)
-    weapons_equipped = None
+    weapons_equipped = initial_equipped_idx  # NEW: preselect equipped from save or default Sword
     armors_equipped = None
     row_gap = 220
     margin_x = 120
@@ -728,6 +923,9 @@ def show_shop(snapshot, screen_surface):
                 # only treat left-click as selection/click
                 if ev.button == 1:
                     if back_rect.collidepoint(ev.pos):
+                        # NEW: click SFX on back button
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
                         return ("resume", None)
                     # record click position for later per-row handling
                     clicked_pos = ev.pos
@@ -845,11 +1043,14 @@ def show_shop(snapshot, screen_surface):
                     except Exception:
                         pygame.draw.rect(screen_surface, (30,30,30), item_rect)
 
-             # outline equipped (green) always; outline focused selection (gold) only when row focused
-            if weapons_equipped == i:
-                pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
-            elif i == weapons_selected and focused_row == "weapons":
-                pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
+                # REMOVE label: "Equipped" text on tile — keep only green border
+                # (deleted the small text overlay)
+
+                # outline equipped (green) always; outline focused selection (gold) only when row focused
+                if weapons_equipped == i:
+                    pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
+                elif i == weapons_selected and focused_row == "weapons":
+                    pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
 
         # handle clicks on weapon arrows/items
         if clicked_pos:
@@ -857,9 +1058,15 @@ def show_shop(snapshot, screen_surface):
             if w_left_rect.collidepoint((mx,my)):
                 weapons_selected = max(0, weapons_selected-1)
                 focused_row = "weapons"
+                # NEW: click SFX
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             elif w_right_rect.collidepoint((mx,my)):
                 weapons_selected = min(len(weapons)-1, weapons_selected+1)
                 focused_row = "weapons"
+                # NEW: click SFX
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             else:
                 # item clicks
                 for i in range(len(weapons)):
@@ -868,6 +1075,9 @@ def show_shop(snapshot, screen_surface):
                     if item_rect.collidepoint((mx,my)):
                         weapons_selected = i
                         focused_row = "weapons"
+                        # NEW: click SFX on opening item page
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
                         # open item detail page
                         try:
                             res = show_item_page(weapons[i], weapons_imgs.get(weapons[i], sword_img))
@@ -876,18 +1086,19 @@ def show_shop(snapshot, screen_surface):
                                 weapons_purchased.add(res[1])
                                 try:
                                     idx = weapons.index(res[1])
-                                    weapons_equipped = idx
+                                    weapons_equipped = idx  # remains in sync with border
                                 except Exception:
                                     pass
-                            # handle upgrade action
+                            # UPDATED: handle upgrade to max Level 4 (starts at 1, +3 upgrades)
                             if res and res[0] == "upgrade":
                                 try:
                                     cur = weapons_upgrades.get(res[1], 0)
-                                    weapons_upgrades[res[1]] = min(3, cur + 1)
+                                    weapons_upgrades[res[1]] = min(4, cur + 1)
                                 except Exception:
                                     pass
                         except Exception:
                             pass
+                        clicked_pos = None
                         break
 
         # draw armors row
@@ -919,22 +1130,6 @@ def show_shop(snapshot, screen_surface):
             if item_rect.right >= panel.left + 10 and item_rect.left <= panel.right - 10:
                 pygame.draw.rect(screen_surface, (50,50,50), item_rect)
                 screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
-                # Draw armor name in up to two lines
-                try:
-                    max_name_w = item_w + 16
-                    name_lines = wrap_name_lines(name, item_f, max_name_w, 2)
-                    line_h = item_f.get_linesize()
-                    start_y = item_rect.bottom + 6
-                    for j, line in enumerate(name_lines):
-                        nm = item_f.render(line, True, (220,220,220))
-                        screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, start_y + j * (line_h + 2))))
-                except Exception:
-                    nm = item_f.render(name, True, (220,220,220))
-                    nm_rect = nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 6))
-                    screen_surface.blit(nm, nm_rect)
-
-            # outline equipped (green) always; outline focused selection (gold) only when focused
-            if armors_equipped == i:
                 pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
             elif i == armors_selected and focused_row == "armors":
                 pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
@@ -945,9 +1140,15 @@ def show_shop(snapshot, screen_surface):
             if a_left_rect.collidepoint((mx,my)):
                 armors_selected = max(0, armors_selected-1)
                 focused_row = "armors"
+                # NEW: click SFX
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             elif a_right_rect.collidepoint((mx,my)):
                 armors_selected = min(len(armors)-1, armors_selected+1)
                 focused_row = "armors"
+                # NEW: click SFX
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
             else:
                 for i in range(len(armors)):
                     x = x_start_armors + i * (item_w + spacing) + armors_offset
@@ -955,6 +1156,9 @@ def show_shop(snapshot, screen_surface):
                     if item_rect.collidepoint((mx,my)):
                         armors_selected = i
                         focused_row = "armors"
+                        # NEW: click SFX on opening item page
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
                         # open item detail page (armor uses same placeholder image)
                         try:
                             res = show_item_page(armors[i], sword_img)
@@ -1235,21 +1439,27 @@ def run_menu():
     title_font = get_font(64)    # reduced from 80
     button_font = get_font(32)   # reduced from 40
 
+    # short-lived toast timestamp (ms since pygame init); 0 == hidden
+    saved_msg_until = 0
+
     # helper to (re)create background and buttons using current SCREEN size
     def create_assets():
         nonlocal background, buttons, btn_w, btn_h, btn_x, btn_y_start, btn_gap
+        global SCREEN_W, SCREEN_H  # ensure globals are updated when we (re)create assets
         SCREEN_W, SCREEN_H = SCREEN.get_size()
         background = load_background("Background", (SCREEN_W, SCREEN_H))
         # Button layout (recompute positions for current size)
         btn_w, btn_h = 300, 60
         btn_x = (SCREEN_W - btn_w) // 2
-        btn_y_start = SCREEN_H // 2 - 2 * btn_h
+        # shift start a little higher to fit 5 buttons
+        btn_y_start = SCREEN_H // 2 - 2 * btn_h - 20
         btn_gap = 30
         buttons = [
-            Button("PLAY",   (btn_x, btn_y_start + 0*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
-            Button("SHOP",   (btn_x, btn_y_start + 1*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
-            Button("OPTIONS",(btn_x, btn_y_start + 2*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
-            Button("QUIT",   (btn_x, btn_y_start + 3*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
+            Button("PLAY",    (btn_x, btn_y_start + 0*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
+            Button("SHOP",    (btn_x, btn_y_start + 1*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
+            Button("OPTIONS", (btn_x, btn_y_start + 2*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
+            Button("SAVE",    (btn_x, btn_y_start + 3*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),  # NEW
+            Button("QUIT",    (btn_x, btn_y_start + 4*(btn_h+btn_gap)), btn_w, btn_h, button_font, (200,255,200), (255,255,255)),
         ]
         # preload select sound (idempotent)
         try:
@@ -1266,6 +1476,29 @@ def run_menu():
 
     def run_options(snapshot):
         return show_options(snapshot, SCREEN)
+
+    # small helper to perform save and show toast
+    def _do_save():
+        nonlocal saved_msg_until
+        try:
+            # load existing; do NOT overwrite coins or weapons fields here
+            data = save.load_player_data() or {}
+            # REMOVE coin overwrite to avoid resetting coins:
+            # data["coins"] = PLAYER_COINS
+            # Keep user currency and upgrades as-is; only update settings below.
+            data["master_volume"] = getattr(sounds, 'MASTER_VOLUME', 1.0)
+            data["resolution"] = list(SCREEN.get_size())
+            data["fullscreen"] = bool(is_fullscreen)
+            # keep weapons lists intact; only ensure default if missing
+            data.setdefault("weapons_owned", ["Sword"])
+            save.save_player_data(data)
+            try:
+                sounds.play_sfx('SelectSound')
+            except Exception:
+                pass
+            saved_msg_until = pygame.time.get_ticks() + 1200
+        except Exception:
+            saved_msg_until = pygame.time.get_ticks() + 1200
 
     while True:
         mouse_pos = pygame.mouse.get_pos()
@@ -1341,6 +1574,9 @@ def run_menu():
                         SCREEN_W, SCREEN_H = SCREEN.get_size()
                         create_assets()
                 elif buttons[3].is_clicked((mx, my)):
+                    # NEW: SAVE
+                    _do_save()
+                elif buttons[4].is_clicked((mx, my)):
                     try:
                         sounds.play_sfx('SelectSound')
                     except Exception:
@@ -1351,8 +1587,10 @@ def run_menu():
         # draw background and grey square border
         SCREEN.blit(background, (0, 0))
         border_margin = 20
-        border_rect = pygame.Rect(border_margin, border_margin, SCREEN_W - 2*border_margin, SCREEN_H - 2*border_margin)
-        pygame.draw.rect(SCREEN, (120, 120, 120), border_rect, 8)  # square corners, grey border
+        # align border with the current screen size each frame
+        screen_rect = SCREEN.get_rect()
+        border_rect = screen_rect.inflate(-2*border_margin, -2*border_margin)
+        pygame.draw.rect(SCREEN, (120, 120, 120), border_rect, 8)
 
         # Title
         title_surf = title_font.render("Descend", True, (182, 143, 64))
@@ -1363,5 +1601,24 @@ def run_menu():
             btn.update(mouse_pos)
             btn.draw(SCREEN)
 
+        # NEW: brief "Saved!" toast near bottom-center when save is triggered
+        if saved_msg_until > 0 and pygame.time.get_ticks() < saved_msg_until:
+            try:
+                toast_font = get_font(20)
+                msg = toast_font.render("Saved!", True, (0, 0, 0))
+                pad_x, pad_y = 14, 8
+                box = pygame.Surface((msg.get_width()+pad_x*2, msg.get_height()+pad_y*2), pygame.SRCALPHA)
+                box.fill((220, 220, 220, 220))
+                # place toast at bottom-right to avoid covering centered buttons
+                margin = 24
+                bx = max(0, SCREEN_W - box.get_width() - margin)
+                by = max(0, SCREEN_H - box.get_height() - margin)
+                SCREEN.blit(box, (bx, by))
+                SCREEN.blit(msg, (bx+pad_x, by+pad_y))
+           
+            except Exception:
+                pass
+
         pygame.display.update()
+        clock.tick(60)   # limit to 60 FPS
         clock.tick(60)   # limit to 60 FPS
