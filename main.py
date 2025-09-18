@@ -9,6 +9,7 @@ import pause  # NEW: pause + death screens
 import powerups  # NEW: powerup selection UI
 import sounds  # NEW: gameplay music volume reference
 from weapons import WEAPON_LIST  # NEW: weapon definitions
+import save  # NEW: read purchased weapons from save.json
 
 BASE_DIR = Path(__file__).parent
 def asset_path(*parts):
@@ -186,6 +187,24 @@ def run_game(screen=None, difficulty: str = "normal"):
     # --- WEAPON SYSTEM (replaces single hardcoded sword) ---
     current_weapon_index = 0
     current_weapon = WEAPON_LIST[current_weapon_index]
+    # NEW: resolve which weapons are owned (always include Sword) and pick equipped weapon if valid
+    try:
+        _saved = save.load_player_data() or {}
+        _owned_names = set(_saved.get("weapons_owned") or [])
+        _equipped_name = (_saved.get("equipped_weapon") or "").strip()
+    except Exception:
+        _owned_names = set()
+        _equipped_name = ""
+    _owned_names.add("Sword")
+    owned_weapon_indices = {i for i, w in enumerate(WEAPON_LIST) if w.name in _owned_names}
+    if _equipped_name:
+        try:
+            _idx = next(i for i, w in enumerate(WEAPON_LIST) if w.name == _equipped_name)
+            if _idx in owned_weapon_indices:
+                current_weapon_index = _idx
+                current_weapon = WEAPON_LIST[_idx]
+        except Exception:
+            pass
     # NEW: player projectile state
     current_projectile_img = None
     player_projectiles = []  # each: {'x','y','vx','vy','life','damage','img','radius'}
@@ -202,6 +221,14 @@ def run_game(screen=None, difficulty: str = "normal"):
     attack_hits = set()
     # NEW: bonus damage that applies to player projectiles (e.g., sunball)
     projectile_damage_bonus = 0
+    # If current starting weapon somehow isn't owned, fall back to the first owned
+    if current_weapon_index not in owned_weapon_indices:
+        try:
+            current_weapon_index = min(owned_weapon_indices) if owned_weapon_indices else 0
+            # reload to ensure weapon state matches the corrected index
+            # (load_weapon is defined below; safe to call after it's defined)
+        except Exception:
+            current_weapon_index = 0
 
     def load_weapon(idx: int):
         nonlocal current_weapon_index, current_weapon, sword_img, attack_duration, attack_cooldown, swing_arc, sword_damage, attack_hits, current_projectile_img
@@ -551,6 +578,29 @@ def run_game(screen=None, difficulty: str = "normal"):
     try: sounds.preload('Dash')
     except Exception: pass
 
+    # NEW: death handler -> convert points to coins, save, and show death screen
+    def _on_player_death():
+        # delegate to game-over so death and quit share the same flow
+        _on_game_over()
+
+    # NEW: unified game-over flow (used on death or when quitting from pause/closing window)
+    def _on_game_over():
+        nonlocal score
+        # UPDATED: apply difficulty multiplier to score before converting 50 pts -> 1 coin
+        coins_gained = int((score * xp_multiplier) // 50)
+        # persist coins
+        try:
+            data = save.load_player_data() or {}
+            data["coins"] = int(data.get("coins", 0)) + coins_gained
+            save.save_player_data(data)
+        except Exception:
+            pass
+        # show Game Over screen with score/coins
+        try:
+            pause.show_death_screen(win, score=score, coins=coins_gained)
+        except Exception:
+            pass
+
     # NEW: level transition state (auto when all enemies dead)
     level_transitioning = False
     game_finished = False  # NEW: flag when all maps used
@@ -833,6 +883,8 @@ def run_game(screen=None, difficulty: str = "normal"):
     run = True
     # Floating damage indicators (use bundled font if available)
     dmg_indicators = []  # each: {'x','y','text','color','life','vy'}
+    # NEW: score counter
+    score = 0
     try:
         font_path = None
         for ext in ("ttf", "otf"):
@@ -887,15 +939,16 @@ def run_game(screen=None, difficulty: str = "normal"):
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                # Show Game Over on hard window close and persist 50:1 conversion
+                _on_game_over()
                 return
-
             # Track movement key presses/releases to determine facing priority
             if event.type == pygame.KEYDOWN:
-                # Weapon switching (keys 1-5)
-                if event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
-                    new_idx = event.key - pygame.K_1
-                    if new_idx != current_weapon_index:
-                        load_weapon(new_idx)
+                # REMOVED: weapon switching via number keys (1-5)
+                # if event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
+                #     new_idx = event.key - pygame.K_1
+                #     if new_idx in owned_weapon_indices and new_idx != current_weapon_index:
+                #         load_weapon(new_idx)
                 if event.key in key_to_dir:
                     d = key_to_dir[event.key]
                     if d in pressed_dirs:
@@ -925,25 +978,46 @@ def run_game(screen=None, difficulty: str = "normal"):
                     # simply continue
                     continue
                 if res and res[0] == "options":
-                    # lazy import menu to open options UI and also credit back time spent inside options
-                    try:
-                        opt_start = pygame.time.get_ticks()
-                        opt_res = menu.show_options(snapshot, win)
+                    # open options, then go back to pause menu instead of resuming
+                    while True:
                         try:
-                            paused_ms2 = max(0, pygame.time.get_ticks() - opt_start)
-                            spawn_grace_timer += paused_ms2
+                            import menu  # ensure menu module is available before calling show_options
+                            opt_start = pygame.time.get_ticks()
+                            opt_res = menu.show_options(snapshot, win)
+                            try:
+                                paused_ms2 = max(0, pygame.time.get_ticks() - opt_start)
+                                spawn_grace_timer += paused_ms2
+                            except Exception:
+                                pass
+                            if opt_res and opt_res[0] == "resolution_changed":
+                                new_size = opt_res[1]
+                                pygame.display.set_mode(new_size)
+                                screen_width, screen_height = win.get_size()
+                                offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
+                                offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
                         except Exception:
                             pass
-                        if opt_res and opt_res[0] == "resolution_changed":
-                            new_size = opt_res[1]
-                            pygame.display.set_mode(new_size)
-                            screen_width, screen_height = win.get_size()
-                            offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
-                            offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
-                    except Exception:
-                        pass
+                        # after closing options, show the pause overlay again
+                        pause_start2 = pygame.time.get_ticks()
+                        res2 = pause.show_pause_overlay(snapshot, win)
+                        try:
+                            paused_ms3 = max(0, pygame.time.get_ticks() - pause_start2)
+                            spawn_grace_timer += paused_ms3
+                        except Exception:
+                            pass
+                        if res2 and res2[0] == "options":
+                            # loop back into options again
+                            continue
+                        if res2 and res2[0] == "menu":
+                            # quitting to menu -> Game Over + coin conversion (50:1)
+                            _on_game_over()
+                            return
+                        # default: resume game
+                        break
                     continue
                 if res and res[0] == "menu":
+                    # quitting to menu -> Game Over + coin conversion (50:1)
+                    _on_game_over()
                     return
 
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
@@ -1097,12 +1171,9 @@ def run_game(screen=None, difficulty: str = "normal"):
                     if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                         if game_map[tile_y][tile_x] == LAVA_TILE:
                             # death by lava
-                            try: sounds.play_sfx('Damaged')
+                            try: sounds.play_sfx('LavaDeath.mp3')
                             except Exception: pass
-                            try:
-                                pause.show_death_screen(win)
-                            except Exception:
-                                pass
+                            _on_player_death()
                             return
                 is_dashing = False
                 if pressed_dirs:
@@ -1136,12 +1207,9 @@ def run_game(screen=None, difficulty: str = "normal"):
                 if 0 <= tile_x < WIDTH and 0 <= tile_y < HEIGHT:
                     if game_map[tile_y][tile_x] == LAVA_TILE:
                         # death by lava
-                        try: sounds.play_sfx('Damaged')
+                        try: sounds.play_sfx('LavaDeath.mp3')
                         except Exception: pass
-                        try:
-                            pause.show_death_screen(win)
-                        except Exception:
-                            pass
+                        _on_player_death()
                         return
             is_dashing = False
             if pressed_dirs:
@@ -1182,9 +1250,11 @@ def run_game(screen=None, difficulty: str = "normal"):
                 player_kb_time = player_kb_duration
                 if hearts <= 0:
                     try:
-                        pause.show_death_screen(win)
+                        # play death sfx already handled elsewhere if needed
+                        pass
                     except Exception:
                         pass
+                    _on_player_death()
                     return
 
         on_trap_prev = on_trap_now
@@ -1206,13 +1276,12 @@ def run_game(screen=None, difficulty: str = "normal"):
 
         win.fill((0, 0, 0))
         draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
-        # NEW: draw level indicator above HUD
+        # NEW: draw score at top of screen (left-aligned to map)
         try:
-            if level_font and level_number > 0:
-                txt = level_font.render(f"Level {level_number}", True, (255, 255, 255))
+            if level_font:
+                sc = level_font.render(f"Score: {score}", True, (255, 255, 255))
                 top_y = max(10, offset_y - 100)
-                cx = offset_x + (WIDTH * TILE_SIZE) // 2 - txt.get_width() // 2
-                win.blit(txt, (cx, top_y))
+                win.blit(sc, (offset_x, top_y))
         except Exception:
             pass
         draw_shadow(win, x, y, char_size, game_map, offset_x, offset_y)
@@ -1336,6 +1405,13 @@ def run_game(screen=None, difficulty: str = "normal"):
         # spawn particles for enemies that died THIS FRAME
         for e in enemies:
             if (not e.alive) and getattr(e, "_died_this_frame", False):
+                # NEW: award points based on enemy kind
+                try:
+                    kind = getattr(e, "kind", "")
+                    pts = { "ghost": 50, "mage": 150, "slime": 100, "zombie": 100 }.get(kind, 100)
+                    score += pts
+                except Exception:
+                    pass
                 try:
                     spawn_death_particles(e)
                 except Exception:
@@ -1513,10 +1589,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                         proj_hit = True
                         # check death
                         if hearts <= 0:
-                            try:
-                                pause.show_death_screen(win)
-                            except Exception:
-                                pass
+                            _on_player_death()
                             return
                         break
                  if proj_hit:
@@ -1560,10 +1633,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                       except Exception:
                           pass
                       if hearts <= 0:
-                          try:
-                              pause.show_death_screen(win)
-                          except Exception:
-                              pass
+                          _on_player_death()
                           return
                       break
 
@@ -1646,8 +1716,12 @@ def run_game(screen=None, difficulty: str = "normal"):
                 if progress > 0.9:
                     retract = (progress - 0.9) / 0.1
                     current_len -= retract * 10
-                sword_center_x = px + current_len * math.cos(math.radians(swing_start_angle))
-                sword_center_y = py + current_len * math.sin(math.radians(swing_start_angle))
+
+                # position the sword image along the thrust direction
+                dx_dir = math.cos(math.radians(swing_start_angle))
+                dy_dir = math.sin(math.radians(swing_start_angle))
+                sword_center_x = px + current_len * dx_dir
+                sword_center_y = py + current_len * dy_dir
             else:
                 radius = 50
                 sword_center_x = px + radius * math.cos(math.radians(current_angle))
@@ -1660,41 +1734,46 @@ def run_game(screen=None, difficulty: str = "normal"):
             # Hit detection
             sword_reach = 64
             if swing_arc == 0:
-                # Segment from player (start) to current tip; enemy treated as circle.
+                # REVISED: segment-vs-circle test for thrust, with LOS and effects; defines thickness
                 dx_dir = math.cos(math.radians(swing_start_angle))
                 dy_dir = math.sin(math.radians(swing_start_angle))
-                # match current_len used above (recalculate same way for consistency)
+                # recompute current_len to match rendering above
                 thrust_out = min(1.0, progress * 1.15)
                 ease = 1 - (1 - thrust_out) * (1 - thrust_out)
                 max_len = 68
+               
                 base_len = 12
+
                 current_len = base_len + ease * (max_len - base_len)
                 if progress > 0.9:
                     retract = (progress - 0.9) / 0.1
                     current_len -= retract * 10
-                # collision thickness (half-width) grows a bit mid-thrust for leniency
-                thickness = 10 + 8 * (1 - abs(0.5 - progress) * 2)  # peak mid thrust
+
+                thickness = 12  # half-width of thrust "ray" to allow forgiving hits
+
                 for e in enemies:
                     if not e.alive:
                         continue
                     eid = id(e)
                     if eid in attack_hits:
                         continue
+
                     ecx = e.x + e.size / 2
                     ecy = e.y + e.size / 2
-                    # vector to enemy
+                    # vector from player to enemy center
                     vx = ecx - px
                     vy = ecy - py
+                    # projection length of enemy vector onto thrust direction
                     proj = vx * dx_dir + vy * dy_dir
+                    # if behind the player or beyond thrust tip (plus small radius), skip
                     if proj < 0 or proj > current_len + e.size * 0.35:
                         continue
-                    # perpendicular distance to segment line
+                    # perpendicular distance from line to enemy center
                     perp_x = vx - proj * dx_dir
                     perp_y = vy - proj * dy_dir
                     perp_dist = math.hypot(perp_x, perp_y)
-                    # allowable distance: weapon thickness + enemy radius factor
                     if perp_dist <= thickness + e.size * 0.30:
-                        # simple LOS: sample a few points only if enemy not flying
+                        # simple LOS for non-flying enemies
                         los_blocked = False
                         if not getattr(e, 'can_fly', False):
                             samples = int(max(1, proj // 12))
@@ -1703,29 +1782,35 @@ def run_game(screen=None, difficulty: str = "normal"):
                                 sy = py + dy_dir * (proj * s / samples)
                                 tx = int((sx - offset_x) // TILE_SIZE)
                                 ty = int((sy - offset_y) // TILE_SIZE)
-                                if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT:
-                                    los_blocked = True; break
-                                if game_map[ty][tx] in WALL_TILES:
-                                    los_blocked = True; break
+                                if tx < 0 or tx >= WIDTH or ty < 0 or ty >= HEIGHT or game_map[ty][tx] in WALL_TILES:
+                                    los_blocked = True
+                                    break
                         if los_blocked:
                             continue
+
+                        # apply damage and effects
                         e.apply_damage(sword_damage, kb_x=dx_dir, kb_y=dy_dir, kb_force=38, kb_duration=110)
                         if getattr(current_weapon, 'stun_ms', 0) > 0:
-                            try: e.stun_timer = max(getattr(e, 'stun_timer', 0), current_weapon.stun_ms)
-                            except Exception: pass
-                        # Apply bleed if weapon has bleed
+                            try:
+                                e.stun_timer = max(getattr(e, 'stun_timer', 0), current_weapon.stun_ms)
+                            except Exception:
+                                pass
                         if getattr(current_weapon, 'bleed_duration_ms', 0) > 0 and getattr(current_weapon, 'bleed_interval_ms', 0) > 0:
                             try:
                                 e.bleed_time = current_weapon.bleed_duration_ms
                                 e.bleed_interval = current_weapon.bleed_interval_ms
-                                e.bleed_tick_timer = 0  # trigger tick next frame
+                                e.bleed_tick_timer = 0
                             except Exception:
                                 pass
                         if poison_level > 0:
-                            try: e.apply_poison(poison_level)
-                            except Exception: pass
-                        try: sounds.play_sfx('HitSound')
-                        except Exception: pass
+                            try:
+                                e.apply_poison(poison_level)
+                            except Exception:
+                                pass
+                        try:
+                            sounds.play_sfx('HitSound')
+                        except Exception:
+                            pass
                         attack_hits.add(eid)
             else:
                 for e in enemies:
@@ -1763,8 +1848,6 @@ def run_game(screen=None, difficulty: str = "normal"):
                                         los_clear = False; break
                                     if game_map[ty][tx] in WALL_TILES:
                                         los_clear = False; break
-                            else:
-                                los_clear = True
                         if not los_clear:
                             continue
                         e.apply_damage(sword_damage, kb_x=vx, kb_y=vy, kb_force=48, kb_duration=160)
@@ -1797,6 +1880,38 @@ def run_game(screen=None, difficulty: str = "normal"):
                 for p in list(e.projectiles):
                     pxp = p['x']
                     pyp = p['y']
+                    # dagger (arc == 0): use thrust segment intersection instead of arc-angle gating
+                    if swing_arc == 0:
+                        # thrust direction and current thrust length (match rendering logic above)
+                        dx_dir = math.cos(math.radians(swing_start_angle))
+                        dy_dir = math.sin(math.radians(swing_start_angle))
+                        thrust_out = min(1.0, progress * 1.15)
+                        ease = 1 - (1 - thrust_out) * (1 - thrust_out)
+                        max_len = 68
+                        base_len = 12
+                        current_len_seg = base_len + ease * (max_len - base_len)
+                        if progress > 0.9:
+                            retract = (progress - 0.9) / 0.1
+                            current_len_seg -= retract * 10
+                        # projectile radius from image/size
+                        proj_img = getattr(e, "projectile_img", None)
+                        proj_radius = max(8, proj_img.get_width() // 2) if proj_img else max(8, int(e.size * 0.12))
+                        # segment-vs-point distance with radius
+                        vxp = pxp - px
+                        vyp = pyp - py
+                        proj_on = vxp * dx_dir + vyp * dy_dir
+                        if proj_on < 0 or proj_on > (current_len_seg + proj_radius + 6):
+                            continue
+                        perp_x = vxp - proj_on * dx_dir
+                        perp_y = vyp - proj_on * dy_dir
+                        perp_dist = math.hypot(perp_x, perp_y)
+                        thickness = 12  # half-width of the deflect "ray"
+                        if perp_dist <= (thickness + proj_radius):
+                            try:
+                                e.projectiles.remove(p)
+                            except Exception:
+                                pass
+                        continue  # handled thrust case
                     vxp = pxp - px
                     vyp = pyp - py
                     pdist = math.hypot(vxp, vyp)
@@ -1820,6 +1935,16 @@ def run_game(screen=None, difficulty: str = "normal"):
         margin = 0
         start_x = offset_x + WIDTH * TILE_SIZE - (total_hearts * heart_w) - margin
         heart_y = bar_y + (bar_h - heart_h) // 2
+        # NEW: draw Level directly above the hearts (centered over the heart row)
+        try:
+            if level_font and level_number > 0:
+                lvl_surf = level_font.render(f"Level {level_number}", True, (255, 255, 255))
+                hearts_w = total_hearts * heart_w + max(0, total_hearts - 1) * heart_spacing
+                lvl_x = start_x + (hearts_w - lvl_surf.get_width()) // 2
+                lvl_y = heart_y - lvl_surf.get_height() - 6
+                win.blit(lvl_surf, (lvl_x, lvl_y))
+        except Exception:
+            pass
         for i in range(total_hearts):
             hx = start_x + i * (heart_w + heart_spacing)
             img = heart_full if i < hearts else heart_empty
@@ -1879,6 +2004,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                             break
 
         pygame.display.update()
+
 # ======================
 # START GAME
 # ======================

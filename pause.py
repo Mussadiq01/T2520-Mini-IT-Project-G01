@@ -149,13 +149,14 @@ def show_pause_overlay(snapshot, screen_surface):
 		pygame.display.update()
 		clock.tick(60)
 
-def show_death_screen(screen_surface):
+def show_death_screen(screen_surface, score: int = 0, coins: int = 0):
 		"""Block until user clicks Quit to Main Menu. Returns when user chooses to quit."""
 		sw, sh = screen_surface.get_size()
 		clock = pygame.time.Clock()
 		# slightly smaller fonts so the title fits comfortably in the panel
 		title_f = get_font(40)
 		btn_f = get_font(20)
+		info_f = get_font(22)  # NEW: for score/coins lines
 
 		# stop any background music and play death SFX once
 		try:
@@ -204,13 +205,22 @@ def show_death_screen(screen_surface):
 			overlay.fill((0,0,0,180))
 			screen_surface.blit(overlay, (0,0))
 
-			panel_w, panel_h = 520, 240
+			panel_w, panel_h = 520, 280  # slightly taller to fit info lines
 			panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
 			pygame.draw.rect(screen_surface, (30,30,30), panel)
 			pygame.draw.rect(screen_surface, (150,20,20), panel, 3)
 
-			title = title_f.render("You died!", True, (220, 180, 180))
-			screen_surface.blit(title, title.get_rect(center=(sw//2, panel.top + 70)))
+			title = title_f.render("Game Over", True, (220, 180, 180))
+			screen_surface.blit(title, title.get_rect(center=(sw//2, panel.top + 56)))
+
+			# NEW: score and coins earned lines
+			try:
+				score_s = info_f.render(f"Score: {int(score)}", True, (220,220,220))
+				coins_s = info_f.render(f"+{int(coins)} coins", True, (212,175,55))
+				screen_surface.blit(score_s, score_s.get_rect(center=(sw//2, panel.top + 110)))
+				screen_surface.blit(coins_s, coins_s.get_rect(center=(sw//2, panel.top + 140)))
+			except Exception:
+				pass
 
 			pygame.draw.rect(screen_surface, (200,200,200), btn_rect)
 			btn_color = (0,200,0) if btn_rect.collidepoint(mouse_pos) else (0,0,0)

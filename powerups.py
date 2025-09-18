@@ -2,6 +2,7 @@ import pygame
 from pathlib import Path
 import random
 import sounds  # added for selection SFX and master volume
+from typing import Tuple, Optional, Dict
 
 # ensure MASTER_VOLUME exists
 try:
@@ -75,7 +76,7 @@ def _wrap_render(font, text, color, max_width, max_lines=2, line_spacing=2):
         y += s.get_height() + line_spacing
     return surf
 
-def choose_powerup(snapshot, screen_surface):
+def choose_powerup(snapshot, screen_surface) -> Tuple[Optional[Dict], int]:
     """Display 3 cards (damage/attackspeed/dashspeed/speed). Returns (pick_dict_or_None, elapsed_ms)."""
     sw, sh = screen_surface.get_size()
 
@@ -154,7 +155,7 @@ def choose_powerup(snapshot, screen_surface):
 
     # define candidate powerups
     pool = [
-        {"id": "damage", "type": "damage", "amount": 5, "label": "+5 Damage"},
+        {"id": "damage", "type": "damage", "amount": 2, "label": "+2 Damage"},
         {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Recovery"},
         {"id": "dashspeed", "type": "dashspeed", "amount": 0.20, "label": "+20% Dash Recovery"},
         {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"},
