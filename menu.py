@@ -389,7 +389,7 @@ def show_shop(snapshot, screen_surface):
         "Sword": "A sharp blade for close combat.",
         "Mallet": "A heavy mallet that stuns enemies.",
         "Dagger": "Fast and precise, ideal for quick strikes.",
-        "Katana": "A finely balanced blade with reach and speed.",
+        "Katana": "A blade with reach and speed that makes your enemies bleed.",
         "The Descender": "A mysterious, powerful blade favored by champions."
     }
 
@@ -438,13 +438,23 @@ def show_shop(snapshot, screen_surface):
     initial_equipped_idx = None
     try:
         saved = save.load_player_data() or {}
+        # NEW: merge saved upgrade levels first (so we don't drop previous progress)
+        saved_up = saved.get("weapons_upgrades") or {}
+        if isinstance(saved_up, dict):
+            for k, v in saved_up.items():
+                if k in weapons:
+                    try:
+                        # keep Sword >= 1; others may be 0 if not owned yet
+                        weapons_upgrades[k] = max(1 if k == "Sword" else 0, int(v))
+                    except Exception:
+                        pass
         owned = saved.get("weapons_owned")
         if isinstance(owned, list):
             for w in owned:
                 if w in weapons:
                     weapons_purchased.add(w)
                     # ensure owned weapons are at least level 1
-                    weapons_upgrades[w] = max(1, weapons_upgrades.get(w, 0))
+                    weapons_upgrades[w] = max(1, int(weapons_upgrades.get(w, 0)))
         eq_name = (saved.get("equipped_weapon") or "").strip()
         if eq_name in weapons:
             initial_equipped_idx = weapons.index(eq_name)
@@ -594,9 +604,9 @@ def show_shop(snapshot, screen_surface):
             if 1 <= cur_level <= 3:
                 return ladder[cur_level - 1]
             return None
-        # NEW: next-upgrade effect preview (+3, +4, +5 damage)
+        # NEW: next-upgrade effect preview (+1, +2, +3 damage)
         def _next_upgrade_bonus(cur_level: int) -> int | None:
-            ladder = {1: 3, 2: 4, 3: 5}
+            ladder = {1: 1, 2: 2, 3: 3}
             return ladder.get(cur_level)
 
         while True:
@@ -901,6 +911,11 @@ def show_shop(snapshot, screen_surface):
         clicked_pos = None
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
+                # NEW: persist upgrades on hard close
+                try:
+                    persist_shop_state()
+                except Exception:
+                    pass
                 return ("menu", None)
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
@@ -923,9 +938,13 @@ def show_shop(snapshot, screen_surface):
                 # only treat left-click as selection/click
                 if ev.button == 1:
                     if back_rect.collidepoint(ev.pos):
-                        # NEW: click SFX on back button
+                        # NEW: click SFX on back button and persist upgrades before leaving
                         try: sounds.play_sfx('SelectSound')
                         except Exception: pass
+                        try:
+                            persist_shop_state()
+                        except Exception:
+                            pass
                         return ("resume", None)
                     # record click position for later per-row handling
                     clicked_pos = ev.pos
@@ -1388,6 +1407,168 @@ def show_difficulty(snapshot, screen_surface):
         pygame.display.update()
         clock_local.tick(60)
 
+# NEW: Scrollable "How to Play" modal (Esc or Back to return)
+def show_howto(snapshot, screen_surface):
+    sw, sh = screen_surface.get_size()
+    # background
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
+            bg = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            bg = load_background("Background", (sw, sh))
+    else:
+        bg = load_background("Background", (sw, sh))
+
+    title_f = get_font(44)
+    body_f = get_font(20)
+    small_f = get_font(16)
+    clock_local = pygame.time.Clock()
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
+
+    # panel and content area
+    panel_w = min(980, max(640, sw - 160))
+    panel_h = min(620, max(380, sh - 160))
+    panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+    text_pad = 22
+    text_rect = pygame.Rect(panel.left + text_pad, panel.top + 86, panel_w - text_pad*2, panel_h - 140)
+    back_rect = pygame.Rect(panel.right - 120, panel.bottom - 52, 100, 36)
+
+    # content (multiple paragraphs)
+    paragraphs = [
+        "Welcome to Descend!",
+        "Goal: Clear waves of enemies on each floor. After a round, choose a power-up, then enter the portal to descend into the next level.",
+        "",
+        "Controls:",
+        "• Move: W / A / S / D",
+        "• Dash: Space",
+        "• Attack: Left Mouse Button",
+        "• Pause: Esc",
+        "",
+        "Basic Tips:",
+        "• Traps toggle on/off — It damages you as well as the enemies.",
+        "• You can dash across lava & enemies but not traps when its on.",
+        "• Lava insta-kills",
+        "• Enemies can be stunned, bled, or poisoned depending on your weapon or power-ups.",
+        "",
+        "Progression:",
+        "• Defeating enemies awards points; points convert to coins at the end of a run.",
+        "• Spend coins in the Shop to buy/upgrade weapons & armors. Your progress is saved.",
+        "",
+        "Good luck!"
+    ]
+
+    # wrap paragraphs into lines
+    def wrap(text: str, font: pygame.font.Font, max_w: int):
+        words = text.split()
+        if not words:
+            return [""]
+        lines, cur = [], words[0]
+        for w in words[1:]:
+            test = cur + " " + w
+            try:
+                if font.size(test)[0] <= max_w:
+                    cur = test
+                else:
+                    lines.append(cur)
+                    cur = w
+            except Exception:
+                lines.append(cur); cur = w
+        lines.append(cur)
+        return lines
+
+    # pre-render lines
+    title = paragraphs[0]
+    content = paragraphs[1:]
+    line_surfs = []
+    # title
+    try:
+        line_surfs.append((title_f.render(title, True, (220,220,220)), True))
+    except Exception:
+        line_surfs.append((body_f.render(title, True, (220,220,220)), True))
+    # body
+    for p in content:
+        lines = wrap(p, body_f, text_rect.width)
+        for i, ln in enumerate(lines):
+            line_surfs.append((body_f.render(ln, True, (210,210,210)), False))
+        # paragraph spacing
+        line_surfs.append((small_f.render(" ", True, (0,0,0)), False))
+
+    # compute total height
+    line_h = body_f.get_linesize()
+    total_h = sum(s.get_height() for s, _ in line_surfs)
+    scroll = 0
+    max_scroll = max(0, total_h - text_rect.height)
+
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                try: sounds.play_sfx('SelectSound')
+                except Exception: pass
+                return
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx, my = ev.pos
+                if back_rect.collidepoint((mx, my)):
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
+                    return
+            if ev.type == pygame.MOUSEWHEEL:
+                # typical wheel event: y positive means up
+                scroll -= ev.y * 40
+                scroll = max(0, min(max_scroll, scroll))
+            if ev.type == pygame.KEYDOWN:
+                if ev.key in (pygame.K_UP, pygame.K_w):
+                    scroll = max(0, scroll - 40)
+                if ev.key in (pygame.K_DOWN, pygame.K_s):
+                    scroll = min(max_scroll, scroll + 40)
+                if ev.key == pygame.K_PAGEUP:
+                    scroll = max(0, scroll - text_rect.height)
+                if ev.key == pygame.K_PAGEDOWN:
+                    scroll = min(max_scroll, scroll + text_rect.height)
+
+        # draw
+        screen_surface.blit(bg, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,160))
+        screen_surface.blit(overlay, (0,0))
+
+        pygame.draw.rect(screen_surface, (28,28,28), panel)
+        pygame.draw.rect(screen_surface, (140,140,140), panel, 3)
+
+        # header
+        hdr = title_f.render("How to Play", True, (220,220,220))
+        screen_surface.blit(hdr, hdr.get_rect(center=(panel.centerx, panel.top + 42)))
+
+        # text viewport
+        clip = screen_surface.get_clip()
+        screen_surface.set_clip(text_rect)
+        y = text_rect.top - scroll
+        for surf, is_title in line_surfs:
+            screen_surface.blit(surf, (text_rect.left, y))
+            y += surf.get_height()
+        screen_surface.set_clip(clip)
+
+        # simple scrollbar
+        if max_scroll > 0:
+            bar = pygame.Rect(text_rect.right + 6, text_rect.top, 6, text_rect.height)
+            pygame.draw.rect(screen_surface, (70,70,70), bar)
+            thumb_h = max(24, int(text_rect.height * (text_rect.height / (total_h + 1))))
+            thumb_y = int(text_rect.top + (text_rect.height - thumb_h) * (scroll / max_scroll))
+            pygame.draw.rect(screen_surface, (180,180,180), (bar.left, thumb_y, bar.width, thumb_h))
+
+        # back button
+        pygame.draw.rect(screen_surface, (200,200,200), back_rect)
+        b_col = (0,200,0) if back_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
+        screen_surface.blit(small_f.render("Back", True, b_col), small_f.render("Back", True, b_col).get_rect(center=back_rect.center))
+
+        pygame.display.update()
+        clock_local.tick(60)
+
 # Menu background music helpers (added)
 _menu_music_started = False
 
@@ -1431,6 +1612,91 @@ def stop_menu_music():
     except Exception:
         pass
     _menu_music_started = False
+def show_play_mode(snapshot, screen_surface):
+    """Modal to pick play mode. Returns 'howto'|'main' or None if cancelled."""
+    sw, sh = screen_surface.get_size()
+    # make blurred background from snapshot if provided
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//12), max(1, sh//12)))
+            bg = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            bg = load_background("Background", (sw, sh))
+    else:
+        bg = load_background("Background", (sw, sh))
+
+    title_f = get_font(44)
+    btn_f = get_font(28)
+    clock_local = pygame.time.Clock()
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
+
+    # two large buttons
+    panel_w = min(840, max(520, sw - 200))
+    panel_h = min(360, max(240, int(sh * 0.32)))
+    panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
+
+    padding_x = 40
+    padding_y = 48
+    inner_w = panel_w - padding_x*2
+    spacing = 30
+    btn_w = int((inner_w - spacing) / 2)
+    btn_h = 70
+    btn_y = panel.top + padding_y + 40
+
+    left_x = panel.left + padding_x
+    howto_rect = pygame.Rect(left_x, btn_y, btn_w, btn_h)
+    main_rect = pygame.Rect(left_x + btn_w + spacing, btn_y, btn_w, btn_h)
+
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return None
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                try:
+                    sounds.play_sfx('SelectSound')
+                except Exception:
+                    pass
+                return None
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx, my = ev.pos
+                if howto_rect.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
+                    return "howto"
+                if main_rect.collidepoint((mx, my)):
+                    try:
+                        sounds.play_sfx('SelectSound')
+                    except Exception:
+                        pass
+                    return "main"
+
+        # draw
+        screen_surface.blit(bg, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,160))
+        screen_surface.blit(overlay, (0,0))
+
+        pygame.draw.rect(screen_surface, (28,28,28), panel)
+        pygame.draw.rect(screen_surface, (140,140,140), panel, 3)
+        title_s = title_f.render("Choose Mode", True, (220,220,220))
+        screen_surface.blit(title_s, title_s.get_rect(center=(sw//2, panel.top + 34)))
+
+        mouse = pygame.mouse.get_pos()
+        h_col = (0,200,0) if howto_rect.collidepoint(mouse) else (0,0,0)
+        m_col = (0,200,0) if main_rect.collidepoint(mouse) else (0,0,0)
+
+        pygame.draw.rect(screen_surface, (200,200,200), howto_rect)
+        pygame.draw.rect(screen_surface, (200,200,200), main_rect)
+        screen_surface.blit(btn_f.render("How to Play", True, h_col), btn_f.render("How to Play", True, h_col).get_rect(center=howto_rect.center))
+        screen_surface.blit(btn_f.render("Main Game", True, m_col), btn_f.render("Main Game", True, m_col).get_rect(center=main_rect.center))
+
+        pygame.display.update()
+        clock_local.tick(60)
 
 def run_menu():
     global SCREEN, SCREEN_W, SCREEN_H, is_fullscreen
@@ -1539,14 +1805,23 @@ def run_menu():
                         snap = SCREEN.copy()
                     except Exception:
                         snap = None
-                    chosen = show_difficulty(snap, SCREEN)
-                    if chosen is None:
+                    # NEW: first pick play mode
+                    mode = show_play_mode(snap, SCREEN)
+                    if mode is None:
                         pass
+                    elif mode == "howto":
+                        # Show How to Play text (keep menu music running)
+                        show_howto(snap, SCREEN)
                     else:
-                        stop_menu_music()  # stop before entering game
-                        import main
-                        main.run_game(SCREEN, difficulty=chosen)
-                        start_menu_music()  # resume after returning from game
+                        # Main game -> then pick difficulty as before
+                        chosen = show_difficulty(snap, SCREEN)
+                        if chosen is None:
+                            pass
+                        else:
+                            stop_menu_music()
+                            import main
+                            main.run_game(SCREEN, difficulty=chosen)
+                            start_menu_music()
                     create_assets()
                 elif buttons[1].is_clicked((mx, my)):
                     try:
@@ -1593,8 +1868,19 @@ def run_menu():
         pygame.draw.rect(SCREEN, (120, 120, 120), border_rect, 8)
 
         # Title
-        title_surf = title_font.render("Descend", True, (182, 143, 64))
-        SCREEN.blit(title_surf, title_surf.get_rect(center=(SCREEN_W//2, SCREEN_H//4)))
+        # old:
+        # title_surf = title_font.render("Descend", True, (182, 143, 64))
+        # SCREEN.blit(title_surf, title_surf.get_rect(center=(SCREEN_W//2, SCREEN_H//4)))
+        # new: outlined title
+        text = "Descend"
+        center = (SCREEN_W // 2, SCREEN_H // 4)
+        title_color = (182, 143, 64)
+        title_surf = title_font.render(text, True, title_color)
+        outline_surf = title_font.render(text, True, (0, 0, 0))
+        rect = title_surf.get_rect(center=center)
+        for ox, oy in [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (-3, 3), (3, -3), (3, 3)]:
+            SCREEN.blit(outline_surf, rect.move(ox, oy))
+        SCREEN.blit(title_surf, rect)
 
         # Buttons
         for btn in buttons:
@@ -1620,5 +1906,4 @@ def run_menu():
                 pass
 
         pygame.display.update()
-        clock.tick(60)   # limit to 60 FPS
         clock.tick(60)   # limit to 60 FPS

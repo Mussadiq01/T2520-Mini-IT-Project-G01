@@ -60,12 +60,12 @@ WEAPON_LIST: List[Weapon] = [
         name="The Descender",
         damage=15,
         swing_ms=240,
-        cooldown_ms=300,
+        cooldown_ms=200,
         arc_deg=130,
         sprite_name="the_descender.png",
         projectile_damage=5,
         projectile_sprite="sunball.png",
-        projectile_speed=420.0,
+        projectile_speed=500.0,
         projectile_life_ms=1500
     ),
 ]
