@@ -1,6 +1,7 @@
 import pygame
 import sounds
 import save
+import sys
 from pathlib import Path
 import os
 
@@ -1462,8 +1463,8 @@ def show_difficulty(snapshot, screen_surface):
             # xp text under hearts (gold)
             gold = (212, 175, 55)
             xp_font = get_font(16)
-            xp_s = xp_font.render(f"{xp_val:.2f}x Points", True, gold)
-            screen_surface.blit(xp_s, xp_s.get_rect(center=(centerx, y_hearts + heart_img.get_height() + 14)))
+            xp_surf = xp_font.render(f"{xp_val:.2f}x Points", True, gold)
+            screen_surface.blit(xp_surf, xp_surf.get_rect(center=(centerx, y_hearts + heart_img.get_height() + 14)))
 
         draw_hearts_and_xp(easy_r.centerx, diff_hearts["easy"], diff_xp["easy"])
         draw_hearts_and_xp(normal_r.centerx, diff_hearts["normal"], diff_xp["normal"])
@@ -1852,17 +1853,34 @@ def run_menu():
     def _do_save():
         nonlocal saved_msg_until
         try:
-            # load existing; do NOT overwrite coins or weapons fields here
+            # load existing; merge settings rather than overwrite unrelated fields
             data = save.load_player_data() or {}
-            # REMOVE coin overwrite to avoid resetting coins:
-            # data["coins"] = PLAYER_COINS
-            # Keep user currency and upgrades as-is; only update settings below.
-            data["master_volume"] = getattr(sounds, 'MASTER_VOLUME', 1.0)
+            # Read current runtime master volume from mixer if available so live slider previews are captured.
+            try:
+                if pygame.mixer.get_init():
+                    current_vol = float(pygame.mixer.music.get_volume())
+                else:
+                    current_vol = float(getattr(sounds, 'MASTER_VOLUME', 1.0))
+            except Exception:
+                current_vol = float(getattr(sounds, 'MASTER_VOLUME', 1.0))
+
+            # persist current master volume and other UI settings
+            data["master_volume"] = current_vol
             data["resolution"] = list(SCREEN.get_size())
             data["fullscreen"] = bool(is_fullscreen)
-            # keep weapons lists intact; only ensure default if missing
             data.setdefault("weapons_owned", ["Sword"])
             save.save_player_data(data)
+
+            # update in-memory runtime value and apply to mixer/channels immediately
+            try:
+                sounds.MASTER_VOLUME = current_vol
+            except Exception:
+                pass
+            try:
+                _apply_master_volume()
+            except Exception:
+                pass
+
             try:
                 sounds.play_sfx('SelectSound')
             except Exception:
@@ -1989,6 +2007,28 @@ def run_menu():
         for ox, oy in [(-3, 0), (3, 0), (0, -3), (0, 3), (-3, -3), (-3, 3), (3, -3), (3, 3)]:
             SCREEN.blit(outline_surf, rect.move(ox, oy))
         SCREEN.blit(title_surf, rect)
+
+        # High score display (top-right). Show MAIN-mode high score only.
+        try:
+            _sd = save.load_player_data() or {}
+            try:
+                _hs = int(float(_sd.get("high_score", 0)))
+            except Exception:
+                _hs = 0
+        except Exception:
+            _hs = 0
+        try:
+            hs_font = get_font(18)
+            hs_surf = hs_font.render(f"Best: {_hs}", True, (212, 175, 55))
+            # do not touch the white border: inset horizontally AND vertically
+            # leave a small gap from the border on both axes
+            inset_x = 12
+            inset_y = 12
+            x_pos = border_rect.left + inset_x
+            y_pos = border_rect.top + inset_y
+            SCREEN.blit(hs_surf, (x_pos, y_pos))
+        except Exception:
+            pass
 
         # Buttons
         for btn in buttons:

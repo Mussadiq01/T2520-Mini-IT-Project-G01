@@ -18,11 +18,20 @@ def asset_path(*parts):
 # gameplay music helpers (added)
 _game_music_started = False
 
-def _find_play_music():
+def _find_play_music(mode: str | None = None):
     base = Path(__file__).parent
     snd_dir = base.joinpath('sounds')
     if not snd_dir.exists():
         return None
+    # prefer an explicit endless music file when running endless mode
+    try:
+        if isinstance(mode, str) and mode.lower() == "endless":
+            for ext in ("ogg", "mp3", "wav"):
+                p = snd_dir.joinpath(f"EndlessBGM.{ext}")
+                if p.exists():
+                    return str(p)
+    except Exception:
+        pass
     for ext in ("ogg", "mp3", "wav"):
         p = snd_dir.joinpath(f"PlayBGM.{ext}")
         if p.exists():
@@ -34,7 +43,7 @@ def _find_play_music():
                 return str(p)
     return None
 
-def _start_play_music():
+def _start_play_music(mode: str | None = None):
     global _game_music_started
     if _game_music_started:
         try:
@@ -45,7 +54,7 @@ def _start_play_music():
         except Exception:
             _game_music_started = False
     try:
-        path = _find_play_music()
+        path = _find_play_music(mode)
         if path:
             pygame.mixer.music.load(path)
             vol = getattr(sounds, 'MASTER_VOLUME', 1.0)
@@ -74,7 +83,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         # reuse the provided display surface (menu's SCREEN)
         win = screen
     clock = pygame.time.Clock()
-    _start_play_music()  # start gameplay music
+    _start_play_music(mode)  # start gameplay music (mode selects EndlessBGM for endless)
 
     # ======================
     # MAP DATA AND LOADER
@@ -630,10 +639,18 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
             return
         # UPDATED: coins are based on already-scaled score (do not multiply again)
         coins_gained = int(score // 50)
-        # persist coins
+        # Persist coins AND update main-mode high_score if beaten
         try:
             data = save.load_player_data() or {}
+            # update coins
             data["coins"] = int(data.get("coins", 0)) + coins_gained
+            # update high_score (only track main-mode high_score here)
+            try:
+                prev_hs = int(data.get("high_score", 0))
+            except Exception:
+                prev_hs = 0
+            if int(score) > prev_hs:
+                data["high_score"] = int(score)
             save.save_player_data(data)
         except Exception:
             pass
@@ -652,6 +669,13 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         try:
             data = save.load_player_data() or {}
             data["coins"] = int(data.get("coins", 0)) + coins_gained
+            # update high_score for main-mode runs if beaten by final_score
+            try:
+                prev_hs = int(data.get("high_score", 0))
+            except Exception:
+                prev_hs = 0
+            if int(final_score) > prev_hs:
+                data["high_score"] = int(final_score)
             save.save_player_data(data)
         except Exception:
             pass
@@ -1697,7 +1721,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                             if was_playing:
                                 pygame.mixer.music.stop()
                                 globals()['_game_music_started'] = False
-                                _start_play_music()
+                                _start_play_music(mode)
                         except Exception:
                             pass
                         # apply powerup effects
