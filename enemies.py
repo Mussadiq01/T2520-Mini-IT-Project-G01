@@ -1,8 +1,9 @@
-import pygame
-import math
-import random
 from typing import Callable, List, Optional, Tuple, Dict
 from pathlib import Path
+# NEW: required imports
+import math
+import random
+import pygame
 
 class Enemy:
     """Chasing enemy with optional directional animations."""
@@ -109,6 +110,33 @@ class Enemy:
         # NEW: kind tag for scoring
         self.kind: str = "unknown"
 
+        # NEW: optional boss flags and timers (used only when is_boss is True)
+        self.is_boss: bool = False
+        # dash settings
+        self.can_dash: bool = False
+        self.dash_cooldown: int = 4000       # ms between dashes
+        self._dash_cd_timer: int = random.randint(int(self.dash_cooldown * 0.5), self.dash_cooldown)
+        self.dash_duration: int = 200        # ms dash duration (applied via knockback)
+        self.dash_force: float = 28.0        # strength of dash knockback impulse
+        # summon settings
+        self.summon_cooldown: int = 6000     # ms between summon waves
+        self._summon_timer: int = self.summon_cooldown
+        self.summon_count: int = 2           # zombies per wave
+        self.max_minions: int = 6            # max non-boss allies alive
+        # NEW: allow choosing minion type: "zombie" (default) or "mage"
+        self.summon_kind: str = "zombie"
+
+        # NEW: boss teleport settings
+        self.can_teleport: bool = False
+        self.teleport_cooldown: int = 5000
+        self._teleport_timer: int = self.teleport_cooldown
+        self.teleport_near_player: bool = True  # try to find a valid tile near player
+
+        # NEW: boss mage volley settings
+        self.volley_count: int = 1        # projectiles per cast (spread around aim)
+        self.volley_spread_deg: float = 30.0
+        self.volley_ring: bool = False    # occasionally fire a full ring
+        self.volley_ring_count: int = 16  # number in the ring when enabled
     def rect(self) -> pygame.Rect:
         return pygame.Rect(int(self.x), int(self.y), self.size, self.size)
 
@@ -176,9 +204,9 @@ class Enemy:
         player_pos: Tuple[int, int],
         is_walkable: Callable[[float, float], bool],
         on_trap: Optional[Callable[[int, int], bool]] = None,
-        is_lava: Optional[Callable[[float, float], bool]] = None,  # existing callback
-        is_wall: Optional[Callable[[float, float], bool]] = None,   # NEW: return True if px,py is a wall/OOB
-        on_projectile_break: Optional[Callable[[float, float, Dict[str, float]], None]] = None  # NEW: called when a projectile is removed (hit wall)
+        is_lava: Optional[Callable[[float, float], bool]] = None,
+        is_wall: Optional[Callable[[float, float], bool]] = None,
+        on_projectile_break: Optional[Callable[[float, float, Dict[str, float]], None]] = None
     ) -> None:
         if not self.alive:
             return
@@ -311,6 +339,161 @@ class Enemy:
         else:
             to_player_nx = to_player_ny = 0.0
 
+        # NEW: Boss abilities (only active when flagged as a boss)
+        if getattr(self, "is_boss", False):
+            # Dash toward player using the built-in knockback for a short burst
+            if getattr(self, "can_dash", False):
+                try:
+                    self._dash_cd_timer -= dt
+                except Exception:
+                    self._dash_cd_timer = getattr(self, "dash_cooldown", 4000)
+                if self._dash_cd_timer <= 0 and dist > self.size * 1.25:
+                    try:
+                        force = float(getattr(self, "dash_force", 28.0))
+                        dur = int(getattr(self, "dash_duration", 200))
+                        self.kb_vx = to_player_nx * force
+                        self.kb_vy = to_player_ny * force
+                        self.kb_time = dur
+                        self.kb_duration = dur
+                    except Exception:
+                        pass
+                    # reset cooldown
+                    self._dash_cd_timer = int(getattr(self, "dash_cooldown", 4000))
+
+            # NEW: Teleport near or onto player on cooldown (primarily for mage bosses)
+            if getattr(self, "can_teleport", False):
+                try:
+                    self._teleport_timer -= dt
+                except Exception:
+                    self._teleport_timer = int(getattr(self, "teleport_cooldown", 5000))
+                if self._teleport_timer <= 0:
+                    # desired landing around player's center; try exact, then nearby offsets
+                    t_size = self.size
+                    tx = px - t_size / 2
+                    ty = py - t_size / 2
+                    placed = False
+                    try:
+                        if is_walkable(tx, ty):
+                            self.x, self.y = tx, ty
+                            placed = True
+                        else:
+                            # try a few offsets around player
+                            for rad in (t_size * 0.5, t_size, t_size * 1.5, t_size * 2.0):
+                                for k in range(8):
+                                    ang = (math.pi * 2.0) * (k / 8.0)
+                                    lx = (px + math.cos(ang) * rad) - t_size / 2
+                                    ly = (py + math.sin(ang) * rad) - t_size / 2
+                                    if is_walkable(lx, ly):
+                                        self.x, self.y = lx, ly
+                                        placed = True
+                                        break
+                                if placed:
+                                    break
+                    except Exception:
+                        # fallback: snap anyway (can be inside wall if callback fails)
+                        self.x, self.y = tx, ty
+                        placed = True
+                    # reset cooldown regardless
+                    self._teleport_timer = int(getattr(self, "teleport_cooldown", 5000))
+
+            # Summon zombies or mages near the boss, capped by max_minions
+            try:
+                self._summon_timer -= dt
+            except Exception:
+                self._summon_timer = int(getattr(self, "summon_cooldown", 6000))
+            if self._summon_timer <= 0 and self.group is not None:
+                try:
+                    alive_others = [g for g in self.group if (g is not self) and getattr(g, "alive", False)]
+                    cap = int(getattr(self, "max_minions", 6))
+                    if len(alive_others) < cap:
+                        to_spawn = min(int(getattr(self, "summon_count", 2)), cap - len(alive_others))
+                        for _ in range(max(0, to_spawn)):
+                            m_size = max(28, int(self.size * 0.8))
+                            placed = False
+                            for _try in range(14):
+                                ang = random.uniform(0, 2 * math.pi)
+                                rad = random.uniform(self.size * 1.0, self.size * 3.5)
+                                mcx = (self.x + self.size/2) + math.cos(ang) * rad
+                                mcy = (self.y + self.size/2) + math.sin(ang) * rad
+                                mx = mcx - m_size / 2
+                                my = mcy - m_size / 2
+                                try:
+                                    if is_walkable(mx, my):
+                                        # build sprites and minion type
+                                        kind = (getattr(self, "summon_kind", "zombie") or "zombie").lower()
+                                        if kind == "mage":
+                                            direction_files = {
+                                                "down":  ["mdown_idle.png","mdown_walk1.png","mdown_walk2.png"],
+                                                "left":  ["mleft_idle.png","mleft_walk1.png","mleft_walk2.png"],
+                                                "right": ["mright_idle.png","mright_walk1.png","mright_walk2.png"],
+                                                "up":    ["mup_idle.png","mup_walk1.png","mup_walk2.png"],
+                                                "idle":  ["mup_idle.png"]
+                                            }
+                                            try:
+                                                sprite_dict = load_enemy_sprites(direction_files, m_size)
+                                            except Exception:
+                                                sprite_dict = None
+                                            m = Enemy(
+                                                mx, my, m_size,
+                                                speed=max(0.7, self.speed * 0.75),
+                                                hp=12,
+                                                sprites=sprite_dict,
+                                                can_cast=True,
+                                                cast_cooldown=3800,
+                                                projectile_speed=3.0,
+                                                cast_stop_distance=140
+                                            )
+                                            m.kind = "mage"
+                                            # projectile image try-load
+                                            sprites_dir = Path(__file__).parent.joinpath("sprites")
+                                            fp = sprites_dir.joinpath("mage_magic.png")
+                                            if fp.exists():
+                                                try:
+                                                    img = pygame.image.load(str(fp)).convert_alpha()
+                                                    size_px = max(20, int(m_size * 0.7))
+                                                    m.projectile_img = pygame.transform.scale(img, (size_px, size_px))
+                                                except Exception:
+                                                    m.projectile_img = None
+                                            else:
+                                                m.projectile_img = None
+                                        else:
+                                            # zombie fallback
+                                            direction_files = {
+                                                "down":  ["zdown_idle.png",  "zdown_walk1.png",  "zdown_walk2.png"],
+                                                "left":  ["zleft_idle.png",  "zleft_walk1.png",  "zleft_walk2.png"],
+                                                "right": ["zright_idle.png", "zright_walk1.png", "zright_walk2.png"],
+                                                "up":    ["zup_idle.png",    "zup_walk1.png",    "zup_walk2.png"],
+                                                "idle":  ["zdown_idle.png"]
+                                            }
+                                            try:
+                                                sprite_dict = load_enemy_sprites(direction_files, m_size)
+                                            except Exception:
+                                                sprite_dict = None
+                                            m = Enemy(mx, my, m_size, speed=max(0.9, self.speed * 0.85), hp=12, sprites=sprite_dict)
+                                            m.kind = "zombie"
+                                        m.group = self.group
+                                        self.group.append(m)
+                                        placed = True
+                                        break
+                                except Exception:
+                                    pass
+                            # if not placed, skip silently
+                except Exception:
+                    pass
+                self._summon_timer = int(getattr(self, "summon_cooldown", 6000))
+
+        px, py = player_pos
+        cx = self.x + self.size / 2
+        cy = self.y + self.size / 2
+        dx = px - cx
+        dy = py - cy
+        dist = math.hypot(dx, dy)
+        if dist > 1:
+            to_player_nx = dx / dist
+            to_player_ny = dy / dist
+        else:
+            to_player_nx = to_player_ny = 0.0
+
         # helper: attempt to nudge out of a non-walkable location
         def try_unstuck():
             if is_walkable(self.x, self.y):
@@ -342,23 +525,29 @@ class Enemy:
         # require a simple LOS check (sample along line) before aggroing.
         # Note: LOS only disables chasing — wandering/hopping still runs below.
         if not self.can_fly and is_wall is not None and dist > 1e-4:
-            los_clear = True
-            # sample points along ray from enemy center to player center
-            steps = max(3, int(dist // max(8.0, self.size * 0.25)))
-            # use steps+1 in denominator so we never sample the exact player center;
-            # this avoids "hugging a wall" near the player's position from marking LOS blocked.
-            for s in range(1, steps + 1):
-                t = s / float(steps + 1)
-                sx = cx + (px - cx) * t
-                sy = cy + (py - cy) * t
-                try:
-                    if is_wall(sx, sy):
+            # NEW: proximity override so walls right next to the player don't block aggro
+            near_dist = max(self.size * 2.0, 72.0)
+            if dist <= near_dist:
+                los_clear = True
+            else:
+                los_clear = True
+                # sample points along ray from enemy center to player center
+                steps = max(3, int(dist // max(8.0, self.size * 0.25)))
+                # use steps+1 in denominator so we never sample the exact player center;
+                # also ignore the last ~15% of samples to avoid false blocks when hugging walls
+                ignore_tail = max(1, int(steps * 0.15))
+                for s in range(1, max(1, steps - ignore_tail) + 1):
+                    t = s / float(steps + 1)
+                    sx = cx + (px - cx) * t
+                    sy = cy + (py - cy) * t
+                    try:
+                        if is_wall(sx, sy):
+                            los_clear = False
+                            break
+                    except Exception:
+                        # on callback error assume blocked to be safe
                         los_clear = False
                         break
-                except Exception:
-                    # on callback error assume blocked to be safe
-                    los_clear = False
-                    break
             if not los_clear:
                 # only cancel chasing; do NOT prevent wandering below
                 chasing = False
@@ -612,11 +801,9 @@ class Enemy:
                                 sx = cx_center + nx * STEP * m
                                 sy = cy_center + ny * STEP * m
                                 for lo in lateral_offsets:
-                                    sample_x = sx + perp_x * lo
-                                    sample_y = sy + perp_y * lo
-                                    sample_tl_x = sample_x - self.size / 2
-                                    sample_tl_y = sample_y - self.size / 2
-                                    if (not is_lava(sample_x, sample_y)) and (not is_walkable(sample_tl_x, sample_tl_y)):
+                                    lx = sx + perp_x * lo
+                                    ly = sy + perp_y * lo
+                                    if is_lava(lx, ly):
                                         blocked = True
                                         break
                                 if blocked:
@@ -834,7 +1021,7 @@ class Enemy:
             if chasing:
                 self.cast_timer -= dt
                 if self.cast_timer <= 0:
-                    # spawn projectile toward player center
+                    # spawn projectile(s) toward player center
                     pc_x = self.x + self.size / 2
                     pc_y = self.y + self.size / 2
                     px, py = player_pos
@@ -844,24 +1031,63 @@ class Enemy:
                     if vd > 1e-4:
                         vx /= vd
                         vy /= vd
-                        # add rotational state so the magic "orbs" spin in flight
-                        self.projectiles.append({
-                            'x': pc_x,
-                            'y': pc_y,
-                            'vx': vx,
-                            'vy': vy,
-                            'speed': self.projectile_speed,
-                            'angle': math.degrees(math.atan2(vy, vx)),  # initial orientation
-                            'spin': random.uniform(-360.0, 360.0)       # degrees per second
-                        })
+                        # NEW: boss volley casting (multi-shot and optional ring)
+                        if getattr(self, "is_boss", False) and getattr(self, "volley_count", 1) > 1:
+                            # spread fan toward the player
+                            spread = float(getattr(self, "volley_spread_deg", 60.0))
+                            n = int(getattr(self, "volley_count", 7))
+                            base_ang = math.degrees(math.atan2(vy, vx))
+                            if n <= 1:
+                                angles = [base_ang]
+                            else:
+                                angles = [base_ang + (-spread/2.0 + spread*(i/(n-1))) for i in range(n)]
+                            for ang_deg in angles:
+                                rad = math.radians(ang_deg)
+                                dvx, dvy = math.cos(rad), math.sin(rad)
+                                self.projectiles.append({
+                                    'x': pc_x,
+                                    'y': pc_y,
+                                    'vx': dvx,
+                                    'vy': dvy,
+                                    'speed': self.projectile_speed,
+                                    'angle': ang_deg,
+                                    'spin': random.uniform(-360.0, 360.0)
+                                })
+                            # occasional ring burst around the boss
+                            if getattr(self, "volley_ring", False):
+                                ring_n = int(getattr(self, "volley_ring_count", 16))
+                                ring_n = max(6, ring_n)
+                                for i in range(ring_n):
+                                    ang = (2.0 * math.pi) * (i / float(ring_n))
+                                    dvx, dvy = math.cos(ang), math.sin(ang)
+                                    self.projectiles.append({
+                                        'x': pc_x,
+                                        'y': pc_y,
+                                        'vx': dvx,
+                                        'vy': dvy,
+                                        'speed': self.projectile_speed,
+                                        'angle': math.degrees(ang),
+                                        'spin': random.uniform(-360.0, 360.0)
+                                    })
+                        else:
+                            # default single shot
+                            self.projectiles.append({
+                                'x': pc_x,
+                                'y': pc_y,
+                                'vx': vx,
+                                'vy': vy,
+                                'speed': self.projectile_speed,
+                                'angle': math.degrees(math.atan2(vy, vx)),
+                                'spin': random.uniform(-360.0, 360.0)
+                            })
                         self.cast_timer = self.cast_cooldown
             else:
                 # keep some headroom on the timer to avoid instant fire after gaining aggro
                 # pick a value between 20% and 100% of cooldown if timer would otherwise be small
                 if self.cast_timer <= int(self.cast_cooldown * 0.2):
                     self.cast_timer = random.randint(int(self.cast_cooldown * 0.2), self.cast_cooldown)
- 
-             # move projectiles and prune only on wall / out-of-bounds
+
+            # move projectiles and prune only on wall / out-of-bounds
             pruned: List[Dict[str, float]] = []
             for p in self.projectiles:
                 # move scaled similar to other movement
@@ -1110,7 +1336,7 @@ def spawn_enemies(
                 for key, frames in sprite_dict.items():
                     for surf in frames:
                         try:
-                            surf.set_alpha(180)
+                            surf.set_alpha(240)
                         except Exception:
                             pass
             ex = tlx + (tile_size - g_size) / 2

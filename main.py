@@ -18,11 +18,20 @@ def asset_path(*parts):
 # gameplay music helpers (added)
 _game_music_started = False
 
-def _find_play_music():
+def _find_play_music(mode: str | None = None):
     base = Path(__file__).parent
     snd_dir = base.joinpath('sounds')
     if not snd_dir.exists():
         return None
+    # prefer an explicit endless music file when running endless mode
+    try:
+        if isinstance(mode, str) and mode.lower() == "endless":
+            for ext in ("ogg", "mp3", "wav"):
+                p = snd_dir.joinpath(f"EndlessBGM.{ext}")
+                if p.exists():
+                    return str(p)
+    except Exception:
+        pass
     for ext in ("ogg", "mp3", "wav"):
         p = snd_dir.joinpath(f"PlayBGM.{ext}")
         if p.exists():
@@ -34,7 +43,7 @@ def _find_play_music():
                 return str(p)
     return None
 
-def _start_play_music():
+def _start_play_music(mode: str | None = None):
     global _game_music_started
     if _game_music_started:
         try:
@@ -45,7 +54,7 @@ def _start_play_music():
         except Exception:
             _game_music_started = False
     try:
-        path = _find_play_music()
+        path = _find_play_music(mode)
         if path:
             pygame.mixer.music.load(path)
             vol = getattr(sounds, 'MASTER_VOLUME', 1.0)
@@ -58,9 +67,10 @@ def _start_play_music():
 # ======================
 # GAME LOOP
 # ======================
-def run_game(screen=None, difficulty: str = "normal"):
+def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
     """Run the game loop. If `screen` (a pygame Surface / display) is provided the game will use it
-       instead of creating a new fullscreen window — this allows returning to the menu cleanly."""
+       instead of creating a new fullscreen window — this allows returning to the menu cleanly.
+       `mode` is currently accepted for compatibility with menu.run_menu and is not used."""
     # --- Common init ---
     created_display = False
     if screen is None:
@@ -73,7 +83,7 @@ def run_game(screen=None, difficulty: str = "normal"):
         # reuse the provided display surface (menu's SCREEN)
         win = screen
     clock = pygame.time.Clock()
-    _start_play_music()  # start gameplay music
+    _start_play_music(mode)  # start gameplay music (mode selects EndlessBGM for endless)
 
     # ======================
     # MAP DATA AND LOADER
@@ -120,6 +130,18 @@ def run_game(screen=None, difficulty: str = "normal"):
         random.shuffle(lst)
     current_stage = 0
     index_in_stage = 0
+
+    # NEW: endless mode flag
+    is_endless = str(mode).lower() == "endless"
+
+    # Helper to reshuffle and restart stage order (used by endless)
+    def _reset_stage_order():
+        nonlocal stage_indices, current_stage, index_in_stage
+        stage_indices = [list(range(0,5)), list(range(5,10)), list(range(10,15))]
+        for lst in stage_indices:
+            random.shuffle(lst)
+        current_stage = 0
+        index_in_stage = 0
 
     # Boss levels: inserted AFTER normal levels 5, 10, 15 -> total 18 levels (15 normal + 3 boss)
     # Boss map always uses map1 (index 0) and may repeat even if map1 already appeared as a normal level.
@@ -192,17 +214,50 @@ def run_game(screen=None, difficulty: str = "normal"):
         _saved = save.load_player_data() or {}
         _owned_names = set(_saved.get("weapons_owned") or [])
         _equipped_name = (_saved.get("equipped_weapon") or "").strip()
+        # NEW: read upgrade levels per weapon (Lv1..Lv4)
+        _weapon_upgrades = dict(_saved.get("weapons_upgrades") or {})
+        # NEW: equipped armor
+        _equipped_armor = (_saved.get("equipped_armor") or "").strip()
     except Exception:
         _owned_names = set()
         _equipped_name = ""
+        _weapon_upgrades = {}
+        _equipped_armor = ""
     _owned_names.add("Sword")
+    # Ensure Sword is equipped by default for first-time players
+    if (not _equipped_name) or all(w.name != _equipped_name for w in WEAPON_LIST):
+        try:
+            sword_idx = next(i for i, w in enumerate(WEAPON_LIST) if w.name == "Sword")
+            current_weapon_index = sword_idx
+            current_weapon = WEAPON_LIST[sword_idx]
+            try:
+                save.save_player_data({"equipped_weapon": "Sword"})
+            except Exception:
+                pass
+        except StopIteration:
+            pass
+    # NEW: armor flags
+    equipped_swiftness = (_equipped_armor == "Swiftness Armor")
+    equipped_tank = (_equipped_armor == "Tank Armor")
+    swiftness_outline = equipped_swiftness
+    tank_outline = equipped_tank
+    # NEW: Life Armor (+1 heart + red outline)
+    equipped_life = (_equipped_armor == "Life Armor")
+    life_outline = equipped_life
+    # NEW: Regen Armor (heal + outline)
+    equipped_regen = (_equipped_armor == "Regen Armor")
+    regen_outline = equipped_regen
+    # NEW: Thorns Armor (retaliate + green outline)
+    equipped_thorns = (_equipped_armor == "Thorns Armor")
+    thorns_outline = equipped_thorns
+    # NEW: surface for outline reuse
+    outline_surface = None
+
     owned_weapon_indices = {i for i, w in enumerate(WEAPON_LIST) if w.name in _owned_names}
     if _equipped_name:
         try:
-            _idx = next(i for i, w in enumerate(WEAPON_LIST) if w.name == _equipped_name)
-            if _idx in owned_weapon_indices:
-                current_weapon_index = _idx
-                current_weapon = WEAPON_LIST[_idx]
+            current_weapon_index = next(i for i, w in enumerate(WEAPON_LIST) if w.name == _equipped_name)
+            current_weapon = WEAPON_LIST[current_weapon_index]
         except Exception:
             pass
     # NEW: player projectile state
@@ -221,39 +276,50 @@ def run_game(screen=None, difficulty: str = "normal"):
     attack_hits = set()
     # NEW: bonus damage that applies to player projectiles (e.g., sunball)
     projectile_damage_bonus = 0
-    # If current starting weapon somehow isn't owned, fall back to the first owned
-    if current_weapon_index not in owned_weapon_indices:
-        try:
-            current_weapon_index = min(owned_weapon_indices) if owned_weapon_indices else 0
-            # reload to ensure weapon state matches the corrected index
-            # (load_weapon is defined below; safe to call after it's defined)
-        except Exception:
-            current_weapon_index = 0
+    # NEW: upgrade-derived damage bonuses (melee + projectile)
+    upgrade_damage_bonus = 0
+    projectile_upgrade_damage = 0
 
-    def load_weapon(idx: int):
-        nonlocal current_weapon_index, current_weapon, sword_img, attack_duration, attack_cooldown, swing_arc, sword_damage, attack_hits, current_projectile_img
-        if 0 <= idx < len(WEAPON_LIST):
-            current_weapon_index = idx
-            current_weapon = WEAPON_LIST[idx]
-            # reload sprite (fallback handled by load_sprite)
-            sword_sprite_name = current_weapon.sprite_name or "sword.png"
-            sword = load_sprite(sword_sprite_name, size=48)
-            sword_img_local = sword if sword is not None else load_sprite("sword.png", size=48)
-            sword_img = sword_img_local
-            attack_duration = current_weapon.swing_ms
-            attack_cooldown = current_weapon.cooldown_ms
-            swing_arc = current_weapon.arc_deg
-            sword_damage = current_weapon.damage
-            attack_hits.clear()
-            # NEW: load projectile sprite (if weapon fires projectiles)
-            current_projectile_img = None
-            if current_weapon.projectile_damage > 0:
-                try:
-                    sprite_name = current_weapon.projectile_sprite or "sunball.png"
-                    # projectiles are usually smaller
-                    current_projectile_img = load_sprite(sprite_name, size=32)
-                except Exception:
-                    current_projectile_img = None
+    # Helper: compute cumulative damage bonus for levels 2..4 -> +1, +3, +6
+    def _calc_upgrade_bonus_for_level(level: int) -> int:
+        # level 1 => 0, 2 => 1, 3 => 1+2, 4 => 1+2+3
+        ladder = [1, 2, 3]
+        if level is None:
+            return 0
+        try:
+            lvl = int(level)
+        except Exception:
+            lvl = 1
+        bonus = 0
+        for i in range(1, min(lvl, 4)):
+            bonus += ladder[i-1]
+        return bonus
+
+    def _get_upgrade_level_for(name: str) -> int:
+        try:
+            return int(_weapon_upgrades.get(name, 1))
+        except Exception:
+            return 1
+
+    def _recompute_weapon_stats_for_current():
+        nonlocal sword_img, attack_duration, attack_cooldown, swing_arc, sword_damage, attack_hits, current_projectile_img, upgrade_damage_bonus, projectile_upgrade_damage
+        # sprite & timings already set by caller if needed
+        # apply upgrade bonuses
+        upgrade_damage_bonus = _calc_upgrade_bonus_for_level(_get_upgrade_level_for(current_weapon.name))
+        projectile_upgrade_damage = upgrade_damage_bonus
+        sword_damage = current_weapon.damage + upgrade_damage_bonus
+        # NEW: apply armor damage bonus (+5) if Swiftness Armor equipped
+        if equipped_swiftness:
+            sword_damage += 5
+            projectile_upgrade_damage += 5
+        attack_hits.clear()
+        # load projectile sprite (if any)
+        current_projectile_img = None
+        if current_weapon.projectile_damage > 0:
+            try:
+                current_projectile_img = load_sprite(current_weapon.projectile_sprite or "sunball.png", size=48)
+            except Exception:
+                current_projectile_img = None
 
     # Poison level from powerups (stacks)
     poison_level = 0
@@ -281,6 +347,11 @@ def run_game(screen=None, difficulty: str = "normal"):
     trap_toggle_interval = 1500  # ms (1.5s toggle)
     trap_timer = 0
     trap_active = False
+
+    # NEW: portal to go to next level after clearing
+    portal_img = load_sprite("portal.png", size=TILE_SIZE)
+    portal_active = False
+    portal_rect = None
 
     FLOOR_SPRITES = [
         load_sprite("floor_1.png"),
@@ -367,12 +438,15 @@ def run_game(screen=None, difficulty: str = "normal"):
         return rotations
 
     sword_rotations = precompute_rotations(sword_img, step=3)
-# (ensure projectile sprite for initial weapon if needed)
+    # (ensure projectile sprite for initial weapon if needed)
     if current_weapon.projectile_damage > 0:
         try:
-            current_projectile_img = load_sprite(current_weapon.projectile_sprite or "sunball.png", size=32)
+            current_projectile_img = load_sprite(current_weapon.projectile_sprite or "sunball.png", size=48)
         except Exception:
             current_projectile_img = None
+
+    # APPLY saved weapon upgrade bonuses (damage for melee and projectiles)
+    _recompute_weapon_stats_for_current()
 
     # ======================
     # CHARACTER SETUP
@@ -390,8 +464,13 @@ def run_game(screen=None, difficulty: str = "normal"):
             return surf
 
     char_size = 48
+    # base speeds
     vel = 4
     dash_speed = 16
+    # NEW: Swiftness Armor speed buffs
+    if equipped_swiftness:
+        vel = int(round(vel * 1.5))  # +50% move speed
+        dash_speed = int(round(dash_speed * 1.5))  # +50% dash speed
     dash_duration = 200
     stamina_max = 3.0
     stamina_regen_rate = 0.5
@@ -436,12 +515,25 @@ def run_game(screen=None, difficulty: str = "normal"):
             return "down" if dy > 0 else "up"
 
     game_map, floor_choices = pick_normal_map()
+    # NEW: endless mode — recycle maps when the staged set is exhausted
+    if is_endless and (not game_map):
+        _reset_stage_order()
+        res0 = pick_normal_map()
+        if res0:
+            game_map, floor_choices = res0
     level_number = 1 if game_map else 0  # NEW: level counter
     is_boss_level = False  # track if current level is a boss level
     normal_levels_completed = 0  # how many normal (non-boss) levels fully cleared
 
     # NEW: dynamic enemy count per level range (non-boss levels)
     def enemy_count_for_level(level_num: int, is_boss: bool) -> int:
+        if is_endless:
+            # simple, stable scaling for endless (no bosses)
+            if level_num <= 6:
+                return 6
+            if level_num <= 12:
+                return 8
+            return 10
         if is_boss:
             return 1  # boss level handled separately
         if 1 <= level_num <= 5:
@@ -456,8 +548,11 @@ def run_game(screen=None, difficulty: str = "normal"):
     # NEW: per-level enemy scaling (HP and speed)
     def _level_scalars(level_num: int):
         """Return (hp_mult, speed_mult) based on visible level number."""
+        # Endless: clamp to highest tier after level 17 so difficulty doesn't drop
+        if is_endless and level_num > 17:
+            return 4.0, 1.6
         if 7 <= level_num <= 11:
-            return 3.0, 1.3   # 3x HP, 30% faster
+            return 2.0, 1.3   # CHANGED: 2x HP, 30% faster
         if 13 <= level_num <= 17:
             return 4.0, 1.6   # 4x HP, 60% faster
         return 1.0, 1.0
@@ -484,6 +579,14 @@ def run_game(screen=None, difficulty: str = "normal"):
             except Exception:
                 pass
 
+    # NEW: per-level points multiplier (affects scoring only)
+    def _level_points_multiplier(level_num: int) -> float:
+        if 7 <= level_num <= 11:
+            return 1.5
+        if 13 <= level_num <= 17:
+            return 2.0
+        return 1.0
+
     screen_width, screen_height = win.get_size()
     offset_x = (screen_width - WIDTH * TILE_SIZE) // 2
     offset_y = (screen_height - HEIGHT * TILE_SIZE) // 2
@@ -492,79 +595,8 @@ def run_game(screen=None, difficulty: str = "normal"):
     y = offset_y + 1 * TILE_SIZE
 
     # --- SHOW POWERUP SELECTION BEFORE THE ROUND STARTS ---
-    # record any chooser elapsed time so we can restore spawn grace later when it's initialized
-    chooser_elapsed_pending = 0
-    try:
-        snap = win.copy()
-    except Exception:
-        snap = None
-    try:
-        # pause/stop music while powerup menu is active
-        was_playing = False
-        try:
-            was_playing = pygame.mixer.music.get_busy()
-            if was_playing:
-                pygame.mixer.music.pause()
-        except Exception:
-            pass
-        # play LevelUp sound when showing powerup menu
-        try:
-            sounds.preload('LevelUp')
-            sounds.play_sfx('LevelUp')
-        except Exception:
-            pass
-        pick, elapsed_ms = powerups.choose_powerup(snap, win)
-        # resume music afterwards
-        try:
-            if was_playing:
-                pygame.mixer.music.stop()
-                try:
-                    globals()['_game_music_started'] = False
-                    _start_play_music()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        chooser_elapsed_pending = int(elapsed_ms or 0)
-        # apply powerup effects
-        if pick:
-            ptype = str(pick.get("type", "")).lower()
-            if ptype == "damage":
-                amt = int(pick.get("amount", 0))
-                sword_damage += amt
-                # NEW: also empower player projectiles (e.g., the_descender's sunball)
-                projectile_damage_bonus += amt
-            elif ptype == "attackspeed":
-                try:
-                    amt = float(pick.get("amount", 0.2))
-                    # reduce attack cooldown by percentage (e.g. 0.2 -> 20%)
-                    attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
-                except Exception:
-                    pass
-            elif ptype == "dashspeed":
-                try:
-                    amt = float(pick.get("amount", 0.2))
-                    if stamina_regen_rate > 0:
-                        stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
-                except Exception:
-                    pass
-            elif ptype == "speed":
-                try:
-                    walk_mult = float(pick.get("walk_mult", 0.25))
-                    dash_mult = float(pick.get("dash_mult", 0.20))
-                    vel = vel * (1.0 + walk_mult)
-                    dash_speed = dash_speed * (1.0 + dash_mult)
-                except Exception:
-                    pass
-            elif ptype == "shield":
-                shield_count += int(pick.get("amount", 1))
-            elif ptype == "poison":
-                try:
-                    poison_level += int(pick.get("amount", 1))
-                except Exception:
-                    poison_level += 1
-    except Exception:
-        chooser_elapsed_pending = 0
+    # REMOVED: pre-round powerup selection; powerups are now granted only after a round is completed.
+    # (Handled exclusively inside do_map_transition after all enemies are defeated.)
 
     # spawn enemies
     enemies = spawn_enemies(game_map, count=enemy_count_for_level(level_number, is_boss_level), tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
@@ -586,12 +618,39 @@ def run_game(screen=None, difficulty: str = "normal"):
     # NEW: unified game-over flow (used on death or when quitting from pause/closing window)
     def _on_game_over():
         nonlocal score
-        # UPDATED: apply difficulty multiplier to score before converting 50 pts -> 1 coin
-        coins_gained = int((score * xp_multiplier) // 50)
-        # persist coins
+        # Endless: no coins, update high score instead
+        if is_endless:
+            high_score = int(score)
+            try:
+                data = save.load_player_data() or {}
+                prev = int(data.get("endless_high_score", 0))
+                if high_score > prev:
+                    data["endless_high_score"] = high_score
+                    save.save_player_data(data)
+                else:
+                    high_score = prev
+            except Exception:
+                pass
+            try:
+                # show Game Over with high score; coins fixed to 0 in endless
+                pause.show_death_screen(win, score=int(score), coins=0, high_score=high_score)
+            except Exception:
+                pass
+            return
+        # UPDATED: coins are based on already-scaled score (do not multiply again)
+        coins_gained = int(score // 50)
+        # Persist coins AND update main-mode high_score if beaten
         try:
             data = save.load_player_data() or {}
+            # update coins
             data["coins"] = int(data.get("coins", 0)) + coins_gained
+            # update high_score (only track main-mode high_score here)
+            try:
+                prev_hs = int(data.get("high_score", 0))
+            except Exception:
+                prev_hs = 0
+            if int(score) > prev_hs:
+                data["high_score"] = int(score)
             save.save_player_data(data)
         except Exception:
             pass
@@ -601,89 +660,96 @@ def run_game(screen=None, difficulty: str = "normal"):
         except Exception:
             pass
 
+    # NEW: unified game-win flow (used after beating all 18 levels)
+    def _on_game_win():
+        nonlocal score
+        # Double the points at the end on win
+        final_score = int(score) * 2
+        coins_gained = int(final_score // 50)
+        try:
+            data = save.load_player_data() or {}
+            data["coins"] = int(data.get("coins", 0)) + coins_gained
+            # update high_score for main-mode runs if beaten by final_score
+            try:
+                prev_hs = int(data.get("high_score", 0))
+            except Exception:
+                prev_hs = 0
+            if int(final_score) > prev_hs:
+                data["high_score"] = int(final_score)
+            save.save_player_data(data)
+        except Exception:
+            pass
+        try:
+            pause.show_victory_screen(win, score=final_score, coins=coins_gained)
+        except Exception:
+            pass
+
     # NEW: level transition state (auto when all enemies dead)
     level_transitioning = False
     game_finished = False  # NEW: flag when all maps used
+    # NEW: one-time per round flag (after clear we show picker, then spawn portal)
+    round_cleared = False
+
+    # helper: pick a bottom-most '.' tile near center for the portal
+    def _find_portal_spot(cur_map):
+        center_x = WIDTH // 2
+        # scan from bottom upwards, prefer positions near center
+        for ty in range(HEIGHT - 2, -1, -1):
+            order = [center_x]
+            for k in range(1, WIDTH):
+                if center_x - k >= 0: order.append(center_x - k)
+                if center_x + k < WIDTH: order.append(center_x + k)
+            for tx in order:
+                try:
+                    if cur_map[ty][tx] == '.':
+                        px = offset_x + tx * TILE_SIZE
+                        py = offset_y + ty * TILE_SIZE
+                        return px, py
+                except Exception:
+                    continue
+        # fallback: near bottom center
+        return offset_x + center_x * TILE_SIZE, offset_y + max(0, HEIGHT - 2) * TILE_SIZE
 
     def do_map_transition():
-        nonlocal game_map, floor_choices, x, y, pressed_dirs, is_dashing, frame_index, enemies, spawn_grace_timer, level_transitioning, vel, dash_speed, attack_cooldown, stamina_regen_rate, sword_damage, projectile_damage_bonus, shield_count, poison_level, game_finished, level_number, is_boss_level, normal_levels_completed
+        nonlocal game_map, floor_choices, x, y, pressed_dirs, is_dashing, frame_index, enemies, spawn_grace_timer, level_transitioning, vel, dash_speed, attack_cooldown, stamina_regen_rate, sword_damage, projectile_damage_bonus, shield_count, poison_level, game_finished, level_number, is_boss_level, normal_levels_completed, portal_active, portal_rect, round_cleared
         if level_transitioning or game_finished:
             return
         level_transitioning = True
-        try:
-            snap = win.copy()
-        except Exception:
-            snap = None
+        # hide portal immediately on transition
+        portal_active = False
+        portal_rect = None
         elapsed_here = 0
-        # Powerup selection (same as before)
-        try:
-            was_playing = False
-            try:
-                was_playing = pygame.mixer.music.get_busy()
-                if was_playing:
-                    pygame.mixer.music.pause()
-            except Exception:
-                pass
-            try:
-                sounds.preload('LevelUp')
-                sounds.play_sfx('LevelUp')
-            except Exception:
-                pass
-            pick, elapsed_here = powerups.choose_powerup(snap, win)
-            try:
-                if was_playing:
-                    pygame.mixer.music.stop()
-                    try:
-                        globals()['_game_music_started'] = False
-                        _start_play_music()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            elapsed_here = int(elapsed_here or 0)
-            if pick:
-                ptype = str(pick.get("type", "")).lower()
-                if ptype == "damage":
-                    sword_damage += int(pick.get("amount", 0))
-                    # NEW: also empower player projectiles (e.g., the_descender's sunball)
-                    projectile_damage_bonus += int(pick.get("amount", 0))
-                elif ptype == "attackspeed":
-                    try:
-                        amt = float(pick.get("amount", 0.2))
-                        attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
-                    except Exception:
-                        pass
-                elif ptype == "dashspeed":
-                    try:
-                        amt = float(pick.get("amount", 0.2))
-                        if stamina_regen_rate > 0:
-                            stamina_regen_rate = stamina_regen_rate * (1.0 / (1.0 - amt))
-                    except Exception:
-                        pass
-                elif ptype == "speed":
-                    try:
-                        walk_mult = float(pick.get("walk_mult", 0.25))
-                        dash_mult = float(pick.get("dash_mult", 0.20))
-                        vel = vel * (1.0 + walk_mult)
-                        dash_speed = dash_speed * (1.0 + dash_mult)
-                    except Exception:
-                        pass
-                elif ptype == "shield":
-                    shield_count += int(pick.get("amount", 1))
-                elif ptype == "poison":
-                    try:
-                        poison_level += int(pick.get("amount", 1))
-                    except Exception:
-                        poison_level += 1
-        except Exception:
-            elapsed_here = 0
 
-        # Determine next level type
+        # NEW: Endless — no bosses, never finish; recycle maps forever
+        if is_endless:
+            res = pick_normal_map()
+            if res is None:
+                _reset_stage_order()
+                res = pick_normal_map()
+            game_map, floor_choices = res
+            level_number += 1
+            is_boss_level = False
+            # Reset player state & spawn enemies
+            x = offset_x + (WIDTH // 2) * TILE_SIZE
+            y = offset_y + 1 * TILE_SIZE
+            pressed_dirs.clear()
+            is_dashing = False
+            frame_index = 0
+            enemies = spawn_enemies(game_map, count=enemy_count_for_level(level_number, False), tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=48, speed=1.5, kind="mix")
+            _apply_level_scaling(enemies, level_number)
+            spawn_grace_timer = 1500 + int(elapsed_here)
+            round_cleared = False
+            level_transitioning = False
+            return
+
+        # Determine next level type (non-endless)
         if is_boss_level:
             # just finished a boss level
             if normal_levels_completed >= 15:
                 game_finished = True
                 level_transitioning = False
+                # NEW: show victory screen after final boss
+                _on_game_win()
                 return
             next_is_boss = False
         else:
@@ -699,6 +765,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                 # No more normal maps left (should only happen after collecting all 15)
                 game_finished = True
                 level_transitioning = False
+                # NEW: show victory screen when no maps remain
+                _on_game_win()
                 return
         game_map, floor_choices = res
         level_number += 1  # increment visible level count (includes boss levels)
@@ -713,17 +781,134 @@ def run_game(screen=None, difficulty: str = "normal"):
         enemies = []
         if is_boss_level:
             try:
-                enemies = spawn_enemies(game_map, count=1, tile_size=TILE_SIZE, offset_x=offset_x, offset_y=offset_y, valid_tile=".", enemy_size=64, speed=1.2, kind="zombie")
-                if enemies:
-                    # center boss (approximate)
-                    mid_x = offset_x + (WIDTH // 2) * TILE_SIZE
-                    mid_y = offset_y + (HEIGHT // 2) * TILE_SIZE
-                    e0 = enemies[0]
-                    try:
-                        e0.x = mid_x
-                        e0.y = mid_y
-                    except Exception:
-                        pass
+                # CHANGED: spawn bosses per boss level
+                enemies = []
+                mid_x = offset_x + (WIDTH // 2) * TILE_SIZE
+                mid_y = offset_y + (HEIGHT // 2) * TILE_SIZE
+                if level_number == 18:
+                    # NEW: spawn BOTH zombie and mage bosses on level 18
+                    z_list = spawn_enemies(
+                        game_map,
+                        count=1,
+                        tile_size=TILE_SIZE,
+                        offset_x=offset_x,
+                        offset_y=offset_y,
+                        valid_tile=".",
+                        enemy_size=64,
+                        speed=1.2,
+                        kind="zombie"
+                    ) or []
+                    m_list = spawn_enemies(
+                        game_map,
+                        count=1,
+                        tile_size=TILE_SIZE,
+                        offset_x=offset_x,
+                        offset_y=offset_y,
+                        valid_tile=".",
+                        enemy_size=64,
+                        speed=1.2,
+                        kind="mage"
+                    ) or []
+                    enemies = z_list + m_list
+                    # place them symmetrically around center and set boss stats
+                    if len(enemies) >= 1:
+                        e_z = enemies[0]
+                        try:
+                            e_z.x = mid_x - e_z.size / 2 - 2 * TILE_SIZE
+                            e_z.y = mid_y - e_z.size / 2
+                            e_z.is_boss = True
+                            e_z.hp = 750
+                            e_z.kind = "boss"
+                            # make it a bit more threatening (dash like level 6 boss)
+                            e_z.can_dash = True
+                            e_z.dash_cooldown = 2000
+                            e_z.dash_duration = 200
+                            e_z.dash_force = 44.0
+                            e_z.speed = max(getattr(e_z, "speed", 1.2) * 1.2, 1.5)
+                            e_z.summon_cooldown = 3500
+                            e_z.summon_count = 2
+                            e_z.max_minions = 8
+                        except Exception:
+                            pass
+                    if len(enemies) >= 2:
+                        e_m = enemies[1]
+                        try:
+                            e_m.x = mid_x - e_m.size / 2 + 2 * TILE_SIZE
+                            e_m.y = mid_y - e_m.size / 2
+                            e_m.is_boss = True
+                            e_m.hp = 750
+                            e_m.kind = "boss"
+                            # ensure mage abilities are enabled (similar to level 12 boss)
+                            e_m.can_cast = True
+                            e_m.cast_cooldown = 2400
+                            e_m.projectile_speed = 3.6
+                            e_m.volley_count = 7
+                            e_m.volley_spread_deg = 80.0
+                            e_m.volley_ring = True
+                            e_m.volley_ring_count = 14
+                            e_m.can_teleport = True
+                            e_m.teleport_cooldown = 4500
+                            e_m.summon_cooldown = 5000
+                            e_m.summon_count = 1
+                            e_m.max_minions = 6
+                            e_m.summon_kind = "mage"
+                            e_m.speed = max(getattr(e_m, "speed", 1.2) * 1.15, 1.4)
+                        except Exception:
+                            pass
+                else:
+                    # existing single-boss logic (Level 6: zombie, Level 12: mage)
+                    boss_kind = "mage" if level_number == 12 else "zombie"
+                    enemies = spawn_enemies(
+                        game_map,
+                        count=1,
+                        tile_size=TILE_SIZE,
+                        offset_x=offset_x,
+                        offset_y=offset_y,
+                        valid_tile=".",
+                        enemy_size=64,
+                        speed=1.2,
+                        kind=boss_kind
+                    )
+                    if enemies:
+                        # center boss (approximate)
+                        e0 = enemies[0]
+                        try:
+                            e0.x = mid_x - e0.size / 2
+                            e0.y = mid_y - e0.size / 2
+                        except Exception:
+                            pass
+                        try:
+                            if level_number == 6:
+                                e0.is_boss = True
+                                e0.hp = 100
+                                e0.can_dash = True
+                                e0.summon_cooldown = 3500
+                                e0.summon_count = 2
+                                e0.max_minions = 8
+                                e0.speed = max(getattr(e0, "speed", 1.2) * 1.25, 1.6)
+                                e0.dash_cooldown = 2000
+                                e0.dash_speed = 44.0
+                                e0.kind = "boss"
+                            elif level_number == 12:
+                                e0.is_boss = True
+                                e0.kind = "boss"
+                                e0.can_cast = True
+                                e0.hp = 160
+                                e0.speed = max(getattr(e0, "speed", 1.2) * 1.15, 1.4)
+                                e0.cast_cooldown = 2400
+                                e0.projectile_speed = 3.6
+                                e0.volley_count = 7
+                                e0.volley_spread_deg = 80.0
+                                e0.volley_ring = True
+                                e0.volley_ring_count = 14
+                                e0.can_teleport = True
+                                e0.teleport_cooldown = 4500
+                                e0.summon_cooldown = 5000
+                                e0.summon_count = 1
+                                e0.max_minions = 6
+                                e0.summon_kind = "mage"
+                        except Exception:
+                            pass
             except Exception:
                 enemies = []
         else:
@@ -731,6 +916,8 @@ def run_game(screen=None, difficulty: str = "normal"):
         # NEW: scale newly spawned enemies by (new) level_number
         _apply_level_scaling(enemies, level_number)
         spawn_grace_timer = 1500 + int(elapsed_here)
+        # NEW: reset round-cleared gate for the new level
+        round_cleared = False
         level_transitioning = False
 
     # --- DEATH PARTICLES SYSTEM ---
@@ -835,14 +1022,9 @@ def run_game(screen=None, difficulty: str = "normal"):
     # Player damage / invincibility / knockback state
     invincible_timer = 0                     # ms remaining of invulnerability after taking hit
     spawn_grace_timer = 1500                 # ms grace period on spawn / map change (1.5s yellow overlay)
-    # If the chooser ran before this point, add back the time it consumed so grace isn't reduced
-    try:
-        spawn_grace_timer += int(chooser_elapsed_pending or 0)
-    except Exception:
-        pass
-    chooser_elapsed_pending = 0
+    # REMOVED: chooser_elapsed_pending credit — no pre-round powerup picker anymore.
 
-    invincible_duration = 2000    # 2 seconds invincibility after losing a heart (increased)
+    invincible_duration = 1000    # 1 seconds invincibility after losing a heart (increased)
     player_kb_vx = 0.0
     player_kb_vy = 0.0
     player_kb_time = 0            # ms remaining for knockback
@@ -873,7 +1055,17 @@ def run_game(screen=None, difficulty: str = "normal"):
         "hard":   (1, 2.0)
     }
     max_hearts, xp_multiplier = diff_map.get(str(difficulty).lower(), (3, 1.0))
+    # NEW: Life Armor grants +1 max heart
+    if equipped_life:
+        max_hearts += 1
     hearts = max_hearts
+    # NEW: keep difficulty name for conditional scoring
+    difficulty_name = str(difficulty).lower()
+    # NEW: Regen Armor timers
+    regen_interval_ms = 20000
+    regen_timer_ms = 0
+    # NEW: Thorns Armor damage (per hit to attacker)
+    thorns_damage = 5
 
     heart_full = load_sprite("heart_1.png", size=48)
     heart_empty = load_sprite("heart_0.png", size=48)
@@ -903,6 +1095,20 @@ def run_game(screen=None, difficulty: str = "normal"):
             level_font = None
     while run:
         dt = clock.tick(60)
+        # refresh armor flag from save in case player equipped it in shop before resuming
+        try:
+            _latest = save.load_player_data() or {}
+            eq_arm = (_latest.get("equipped_armor") or "").strip()
+            swiftness_outline = (eq_arm == "Swiftness Armor")
+            tank_outline = (eq_arm == "Tank Armor")
+            # NEW: Life Armor outline refresh
+            life_outline = (eq_arm == "Life Armor")
+            # NEW: Regen Armor outline refresh
+            regen_outline = (eq_arm == "Regen Armor")
+            # NEW: Thorns Armor outline refresh
+            thorns_outline = (eq_arm == "Thorns Armor")
+        except Exception:
+            pass
 
         # decrement player invincibility & knockback timers
         if invincible_timer > 0:
@@ -936,6 +1142,15 @@ def run_game(screen=None, difficulty: str = "normal"):
             cooldown_timer -= dt
             if cooldown_timer < 0:
                 cooldown_timer = 0
+        # NEW: Regen Armor healing tick (only accumulate when missing hearts)
+        if regen_outline:
+            if hearts < max_hearts:
+                regen_timer_ms += dt
+                if regen_timer_ms >= regen_interval_ms:
+                    hearts = min(max_hearts, hearts + 1)
+                    regen_timer_ms = 0
+            else:
+                regen_timer_ms = 0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1020,6 +1235,28 @@ def run_game(screen=None, difficulty: str = "normal"):
                     _on_game_over()
                     return
 
+            # NEW: developer hotkey — insta-clear all enemies in the current level
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+                for e in enemies:
+                    if getattr(e, "alive", False):
+                        e.alive = False
+                        try:
+                            e._died_this_frame = True  # grant points/particles this frame
+                        except Exception:
+                            pass
+                        # clear active projectiles from casters
+                        try:
+                            if getattr(e, "projectiles", None) is not None:
+                                e.projectiles.clear()
+                        except Exception:
+                            pass
+
+            if event.type == pygame.KEYUP:
+                if event.key in key_to_dir:
+                    d = key_to_dir[event.key]
+                    if d in pressed_dirs:
+                        pressed_dirs.remove(d)
+
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 if not is_dashing and stamina >= 1.0:
                     # Determine dash direction from current key state; fallback to last_direction
@@ -1087,8 +1324,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                             'vx': dxn * speed,
                             'vy': dyn * speed,
                             'life': proj_life,
-                            # NEW: base projectile damage + accumulated bonus from powerups
-                            'damage': current_weapon.projectile_damage + projectile_damage_bonus,
+                            # CHANGED: include upgrade damage bonus for projectiles
+                            'damage': current_weapon.projectile_damage + projectile_damage_bonus + projectile_upgrade_damage,
                             'img': current_projectile_img,
                             'radius': max(10, current_projectile_img.get_width() // 2)
                         })
@@ -1259,6 +1496,17 @@ def run_game(screen=None, difficulty: str = "normal"):
 
         on_trap_prev = on_trap_now
 
+        # NEW: portal collision -> go to next level
+        if portal_active and portal_rect and foot_rect.colliderect(portal_rect):
+            portal_active = False
+            try:
+                sounds.play_sfx('SelectSound')
+            except Exception:
+                pass
+            do_map_transition()
+            # after calling transition we skip further checks this frame
+            # (drawing below will reflect new map on next iteration)
+
         if stamina < stamina_max:
             stamina += stamina_regen_rate * (dt / 1000.0)
             if stamina > stamina_max:
@@ -1276,6 +1524,12 @@ def run_game(screen=None, difficulty: str = "normal"):
 
         win.fill((0, 0, 0))
         draw_map(win, game_map, floor_choices, offset_x, offset_y, trap_active)
+        # NEW: draw portal if active
+        if portal_active and portal_rect:
+            try:
+                win.blit(portal_img, portal_rect.topleft)
+            except Exception:
+                pygame.draw.rect(win, (120, 0, 180), portal_rect)
         # NEW: draw score at top of screen (left-aligned to map)
         try:
             if level_font:
@@ -1405,13 +1659,27 @@ def run_game(screen=None, difficulty: str = "normal"):
         # spawn particles for enemies that died THIS FRAME
         for e in enemies:
             if (not e.alive) and getattr(e, "_died_this_frame", False):
-                # NEW: award points based on enemy kind
-                try:
-                    kind = getattr(e, "kind", "")
-                    pts = { "ghost": 50, "mage": 150, "slime": 100, "zombie": 100 }.get(kind, 100)
-                    score += pts
-                except Exception:
-                    pass
+                # NEW: special reward for level 18 bosses
+                if getattr(e, "is_boss", False) and level_number == 18:
+                    try:
+                        score += 5000
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        kind = getattr(e, "kind", "")
+                        pts = { "ghost": 50, "mage": 150, "slime": 100, "zombie": 100 }.get(kind, 100)
+                        lvl_mult = _level_points_multiplier(level_number)
+                        score += int(pts * lvl_mult * xp_multiplier)
+                    except Exception:
+                        pass
+                    # CHANGED: Boss bonus scales with difficulty (easy=.75, normal=1.0, hard=2.0)
+                    try:
+                        if getattr(e, "is_boss", False):
+                            base = 1000
+                            score += int(base * xp_multiplier)
+                    except Exception:
+                        pass
                 try:
                     spawn_death_particles(e)
                 except Exception:
@@ -1425,11 +1693,103 @@ def run_game(screen=None, difficulty: str = "normal"):
         if not level_transitioning:
             try:
                 if enemies and all((not en.alive) for en in enemies):
-                    do_map_transition()
+                    if not round_cleared:
+                        # show powerup picker immediately after last kill
+                        try:
+                            snap = win.copy()
+                        except Exception:
+                            snap = None
+                        was_playing = False
+                        try:
+                            was_playing = pygame.mixer.music.get_busy()
+                            if was_playing:
+                                pygame.mixer.music.pause()
+                        except Exception:
+                            pass
+                        try:
+                            sounds.preload('LevelUp')
+                            sounds.play_sfx('LevelUp')
+                        except Exception:
+                            pass
+                        pick, _elapsed = (None, 0)
+                        try:
+                            pick, _elapsed = powerups.choose_powerup(snap, win)
+                        except Exception:
+                            pass
+                        # resume gameplay bgm
+                        try:
+                            if was_playing:
+                                pygame.mixer.music.stop()
+                                globals()['_game_music_started'] = False
+                                _start_play_music(mode)
+                        except Exception:
+                            pass
+                        # apply powerup effects
+                        if pick:
+                            ptype = str(pick.get("type", "")).lower()
+                            if ptype == "damage":
+                                amt = int(pick.get("amount", 0))
+                                sword_damage += amt
+                                projectile_damage_bonus += amt
+                            elif ptype == "attackspeed":
+                                try:
+                                    amt = float(pick.get("amount", 0.2))
+                                    attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                                except Exception:
+                                    pass
+                            elif ptype == "dashspeed":
+                                try:
+                                    amt = float(pick.get("amount",  0.2))
+                                    stamina_regen_rate = max(0.0, stamina_regen_rate * (1.0 + amt))
+                                except Exception:
+                                    pass
+                            elif ptype == "speed":
+                                try:
+                                    walk_mult = float(pick.get("walk_mult", 0.25))
+                                    dash_mult = float(pick.get("dash_mult", 0.20))
+                                    vel = vel * (1.0 + walk_mult)
+                                    dash_speed = dash_speed * (1.0 + dash_mult)
+                                except Exception:
+                                    pass
+                            elif ptype == "shield":
+                                shield_count += int(pick.get("amount", 1))
+                            elif ptype == "poison":
+                                try:
+                                    poison_level += int(pick.get("amount", 1))
+                                except Exception:
+                                    poison_level += 1
+                        # mark cleared and spawn portal at bottom-center
+                        round_cleared = True
+                        try:
+                            cx = WIDTH // 2
+                            ty = HEIGHT - 2  # prefer second-to-last row
+                            # if target tile isn't walkable, search sideways on same row
+                            placed = False
+                            for dx_off in [0] + [i for k in range(1, WIDTH) for i in (-k, k)]:
+                                tx = cx + dx_off
+                                if 0 <= tx < WIDTH and 0 <= ty < HEIGHT and game_map[ty][tx] == '.':
+                                    pxp = offset_x + tx * TILE_SIZE
+                                    pyp = offset_y + ty * TILE_SIZE
+                                    portal_rect = pygame.Rect(pxp, pyp, TILE_SIZE, TILE_SIZE)
+                                    portal_active = True
+                                    placed = True
+                                    break
+                            if not placed:
+                                # fallback to helper scan from bottom up near center
+                                pxp, pyp = _find_portal_spot(game_map)
+                                portal_rect = pygame.Rect(pxp, pyp, TILE_SIZE, TILE_SIZE)
+                                portal_active = True
+                        except Exception:
+                            # ultimate fallback: bottom-center pixel cell
+                            pxp = offset_x + (WIDTH // 2) * TILE_SIZE
+                            pyp = offset_y + max(0, HEIGHT - 2) * TILE_SIZE
+                            portal_rect = pygame.Rect(pxp, pyp, TILE_SIZE, TILE_SIZE)
+                            portal_active = True
             except Exception:
                 pass
+
         if game_finished:
-            return  # exit game loop after final map
+            return  # exit game loop
 
         # Draw enemies
         for e in enemies:
@@ -1447,6 +1807,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                         pass
 
         # === PLAYER PROJECTILES (The Descender: sunball) ===
+       
         if player_projectiles:
             updated_proj = []
             for p in player_projectiles:
@@ -1456,6 +1817,8 @@ def run_game(screen=None, difficulty: str = "normal"):
                     continue
                 p['x'] += p['vx'] * (dt / 1000.0)
                 p['y'] += p['vy'] * (dt / 1000.0)
+
+
 
                 cx = p['x']
                 cy = p['y']
@@ -1540,7 +1903,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                 else:
                     pygame.draw.circle(win, (255, 200, 80), (int(p['x']), int(p['y'])), p['radius'])
 
-        # --- NEW: enemy projectiles can hit the player (mage magic) ---
+        # --- NEW: enemy projectiles can hit the player (mage magic) --- retaliation for Thorns
         # use player_center computed from previous frame; handle once per frame
         # projectiles should not hurt the player while invincible, during spawn grace,
         # or while the player is actively dashing
@@ -1553,9 +1916,9 @@ def run_game(screen=None, difficulty: str = "normal"):
                  for p in list(e.projectiles):
                     # projectile position
                     pxp = p.get('x', 0.0)
-                    pyp = p.get('y', 0.0)
+                    py_proj = p.get('y', 0.0)
                     dxp = pxp - pcx
-                    dyp = pyp - pcy
+                    dyp = py_proj - pcy
                     pdist = math.hypot(dxp, dyp)
                     # choose projectile radius from image if available
                     proj_radius = 12
@@ -1569,6 +1932,23 @@ def run_game(screen=None, difficulty: str = "normal"):
                         hearts -= 1
                         try: sounds.play_sfx('Damaged')
                         except Exception: pass
+                        # Thorns retaliation: damage the caster
+                        if thorns_outline:
+                            try:
+                                ex = e.x + e.size / 2
+                                ey = e.y + e.size / 2
+                                rdx = (ex - pcx)
+                                rdy = (ey - pcy)
+                                nrm = math.hypot(rdx, rdy) or 1.0
+                                e.apply_damage(thorns_damage, kb_x=rdx / nrm, kb_y=rdy / nrm, kb_force=26, kb_duration=140)
+                            except Exception:
+                                try:
+                                    if hasattr(e, 'hp'):
+                                        e.hp -= thorns_damage
+                                    else:
+                                        e.health -= thorns_damage
+                                except Exception:
+                                    pass
                         # knockback away from projectile direction
                         try:
                             vx = p.get('vx', 0.0)
@@ -1579,6 +1959,12 @@ def run_game(screen=None, difficulty: str = "normal"):
                             player_kb_time = player_kb_duration
                         except Exception:
                             pass
+                        # Tank Armor: stun the attacker when their projectile hits you
+                        if tank_outline:
+                            try:
+                                e.stun_timer = max(getattr(e, 'stun_timer', 0), shield_stun_duration)
+                            except Exception:
+                                pass
                         invincible_timer = invincible_duration
                         player_flash_timer = player_flash_duration
                         # remove the projectile
@@ -1595,14 +1981,12 @@ def run_game(screen=None, difficulty: str = "normal"):
                  if proj_hit:
                     break
 
-        # Enemy -> player collision (damage)
+        # Enemy -> player collision (damage) --- add Thorns retaliation on contact
         # smaller hitbox for player (inset on all sides)
         inset = 10
         player_rect = pygame.Rect(int(x) + inset, int(y) + inset, char_size - inset*2, char_size - inset*2)
-        # direct enemy collision damage should also not apply while dashing
         if invincible_timer <= 0 and spawn_grace_timer <= 0 and not is_dashing:
              for e in enemies:
-                 # skip dead enemies and skip direct contact damage from mages (they damage via projectiles)
                  if not e.alive or getattr(e, "can_cast", False) or getattr(e, "stun_timer", 0) > 0:
                       continue
                  if e.rect().colliderect(player_rect):
@@ -1621,12 +2005,37 @@ def run_game(screen=None, difficulty: str = "normal"):
                          ny = kb_y / norm
                       else:
                          nx, ny = 0.0, -1.0
-                      kb_force = 20.0   # greatly reduced knockback strength
-                      player_kb_vx = nx * kb_force
-                      player_kb_vy = ny * kb_force
-                      player_kb_time = player_kb_duration
+                      # Thorns retaliation: damage the attacker (knock them away from player)
+                      if thorns_outline:
+                          try:
+                              e.apply_damage(thorns_damage, kb_x=-nx, kb_y=-ny, kb_force=26, kb_duration=140)
+                          except Exception:
+                              try:
+                                  if hasattr(e, 'hp'):
+                                      e.hp -= thorns_damage
+                                  else:
+                                      e.health -= thorns_damage
+                              except Exception:
+                                  pass
+                      # Apply knockback to player only if NOT wearing Tank Armor
+                      if not tank_outline:
+                          kb_force = 20.0
+                          player_kb_vx = nx * kb_force
+                          player_kb_vy = ny * kb_force
+                          player_kb_time = player_kb_duration
+                      # Reflect knockback to attacker when wearing Tank Armor
+                      if tank_outline:
+                          try:
+                              e.kb_vx = -nx * 10
+                              e.kb_vy = -ny * 10
+                              e.kb_time = max(getattr(e, 'kb_time', 0), 140)
+                          except Exception:
+                              pass
+                          try:
+                              e.stun_timer = max(getattr(e, 'stun_timer', 0), shield_stun_duration)
+                          except Exception:
+                              pass
                       invincible_timer = invincible_duration
-                      # flash player and enemy briefly
                       player_flash_timer = player_flash_duration
                       try:
                           e.flash_timer = e.flash_duration
@@ -1665,7 +2074,54 @@ def run_game(screen=None, difficulty: str = "normal"):
             except Exception:
                 draw_char = char
         win.blit(draw_char, (x, y))
-
+        # NEW: outlines for equipped armors using mask edges (no filled circle)
+        try:
+            m_draw = pygame.mask.from_surface(draw_char)
+        except Exception:
+            m_draw = None
+        if swiftness_outline and m_draw:
+            try:
+                pts = m_draw.outline()
+                if pts and len(pts) >= 3:
+                    pts_t = [(x + p[0], y + p[1]) for p in pts]
+                    pygame.draw.polygon(win, (255, 220, 40), pts_t, 3)
+            except Exception:
+                pass
+        if tank_outline and m_draw:
+            try:
+                pts = m_draw.outline()
+                if pts and len(pts) >= 3:
+                    pts_t = [(x + p[0], y + p[1]) for p in pts]
+                    pygame.draw.polygon(win, (245, 245, 245), pts_t, 3)
+            except Exception:
+                pass
+        # NEW: Life Armor red outline
+        if life_outline and m_draw:
+            try:
+                pts = m_draw.outline()
+                if pts and len(pts) >= 3:
+                    pts_t = [(x + p[0], y + p[1]) for p in pts]
+                    pygame.draw.polygon(win, (220, 60, 60), pts_t, 3)
+            except Exception:
+                pass
+        # NEW: Regen Armor blue outline
+        if regen_outline and m_draw:
+            try:
+                pts = m_draw.outline()
+                if pts and len(pts) >= 3:
+                    pts_t = [(x + p[0], y + p[1]) for p in pts]
+                    pygame.draw.polygon(win, (80, 160, 255), pts_t, 3)
+            except Exception:
+                pass
+        # NEW: Thorns Armor green outline
+        if thorns_outline and m_draw:
+            try:
+                pts = m_draw.outline()
+                if pts and len(pts) >= 3:
+                    pts_t = [(x + p[0], y + p[1]) for p in pts]
+                    pygame.draw.polygon(win, (60, 200, 80), pts_t, 3)
+            except Exception:
+                pass
         # Update player_center
         char_rect = char.get_rect(topleft=(x, y))
         player_center = char_rect.center
@@ -1683,7 +2139,7 @@ def run_game(screen=None, difficulty: str = "normal"):
             y_pos = bar_y
             pygame.draw.rect(win, (128, 128, 128), (x_pos, y_pos, BAR_W, BAR_H))
             fill = min(1.0, max(0.0, stamina - i))
-            if fill > 0:
+            if fill >  0:
                 fill_w = int(BAR_W * fill)
                 pygame.draw.rect(win, (225, 225, 225), (x_pos, y_pos, fill_w, BAR_H))
         # Attack cooldown bar
@@ -1692,6 +2148,7 @@ def run_game(screen=None, difficulty: str = "normal"):
         bar_y = offset_y - 60
         pygame.draw.rect(win, (100, 100, 100), (bar_x, bar_y, bar_w, bar_h))  # bg
         if cooldown_timer > 0:
+           
             ratio = 1 - (cooldown_timer / (attack_duration + attack_cooldown))
             fill_w = int(bar_w * ratio)
             pygame.draw.rect(win, (255, 0, 0), (bar_x, bar_y, fill_w, bar_h))
@@ -1712,7 +2169,7 @@ def run_game(screen=None, difficulty: str = "normal"):
                 max_len = 68
                 base_len = 12
                 current_len = base_len + ease * (max_len - base_len)
-                # slight retract during last 10% for visual snap
+                # slight retract during last  10% for visual snap
                 if progress > 0.9:
                     retract = (progress - 0.9) / 0.1
                     current_len -= retract * 10
@@ -1741,7 +2198,6 @@ def run_game(screen=None, difficulty: str = "normal"):
                 thrust_out = min(1.0, progress * 1.15)
                 ease = 1 - (1 - thrust_out) * (1 - thrust_out)
                 max_len = 68
-               
                 base_len = 12
 
                 current_len = base_len + ease * (max_len - base_len)
@@ -1938,7 +2394,11 @@ def run_game(screen=None, difficulty: str = "normal"):
         # NEW: draw Level directly above the hearts (centered over the heart row)
         try:
             if level_font and level_number > 0:
-                lvl_surf = level_font.render(f"Level {level_number}", True, (255, 255, 255))
+                if not is_endless:
+                    lvl_surf = level_font.render(f"Level {level_number}", True, (255, 255, 255))
+                else:
+                    # Endless: show a static label (no level number)
+                    lvl_surf = level_font.render("Endless", True, (255, 255, 255))
                 hearts_w = total_hearts * heart_w + max(0, total_hearts - 1) * heart_spacing
                 lvl_x = start_x + (hearts_w - lvl_surf.get_width()) // 2
                 lvl_y = heart_y - lvl_surf.get_height() - 6
@@ -2004,7 +2464,6 @@ def run_game(screen=None, difficulty: str = "normal"):
                             break
 
         pygame.display.update()
-
 # ======================
 # START GAME
 # ======================
