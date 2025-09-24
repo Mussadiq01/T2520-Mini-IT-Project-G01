@@ -17,13 +17,14 @@ def asset_path(*parts):
 
 # gameplay music helpers (added)
 _game_music_started = False
+_last_bgm_mode = None  # remember last requested mode so resume uses same track
 
-def _find_play_music(mode: str | None = None):
+def _find_play_music(mode=None):
     base = Path(__file__).parent
     snd_dir = base.joinpath('sounds')
     if not snd_dir.exists():
         return None
-    # prefer an explicit endless music file when running endless mode
+    # If caller requested endless mode, prefer EndlessBGM.* first
     try:
         if isinstance(mode, str) and mode.lower() == "endless":
             for ext in ("ogg", "mp3", "wav"):
@@ -32,6 +33,7 @@ def _find_play_music(mode: str | None = None):
                     return str(p)
     except Exception:
         pass
+    # Fallback to original search order
     for ext in ("ogg", "mp3", "wav"):
         p = snd_dir.joinpath(f"PlayBGM.{ext}")
         if p.exists():
@@ -41,10 +43,20 @@ def _find_play_music(mode: str | None = None):
             p = snd_dir.joinpath(f"{name}.{ext}")
             if p.exists():
                 return str(p)
+    # also try generic "EndlessBGM" if earlier mode check missed it
+    for ext in ("ogg", "mp3", "wav"):
+        p = snd_dir.joinpath(f"EndlessBGM.{ext}")
+        if p.exists():
+            return str(p)
     return None
 
-def _start_play_music(mode: str | None = None):
-    global _game_music_started
+def _start_play_music(mode=None):
+    global _game_music_started, _last_bgm_mode
+    # remember mode so future resume calls without explicit param keep same track
+    if mode is not None:
+        _last_bgm_mode = mode
+    else:
+        mode = _last_bgm_mode
     if _game_music_started:
         try:
             if pygame.mixer.music.get_busy():
@@ -83,7 +95,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         # reuse the provided display surface (menu's SCREEN)
         win = screen
     clock = pygame.time.Clock()
-    _start_play_music(mode)  # start gameplay music (mode selects EndlessBGM for endless)
+    _start_play_music(mode)  # start gameplay music (pass mode so endless uses EndlessBGM)
 
     # ======================
     # MAP DATA AND LOADER
@@ -620,31 +632,18 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         nonlocal score
         # Endless: no coins, update high score instead
         if is_endless:
-            high_score = int(score)
             try:
-                data = save.load_player_data() or {}
-                prev = int(data.get("endless_high_score", 0))
-                if high_score > prev:
-                    data["endless_high_score"] = high_score
-                    save.save_player_data(data)
-                else:
-                    high_score = prev
-            except Exception:
-                pass
-            try:
-                # show Game Over with high score; coins fixed to 0 in endless
-                pause.show_death_screen(win, score=int(score), coins=0, high_score=high_score)
+                # show Game Over; coins = 0
+                pause.show_death_screen(win, score=int(score), coins=0, high_score=None)
             except Exception:
                 pass
             return
         # UPDATED: coins are based on already-scaled score (do not multiply again)
         coins_gained = int(score // 50)
-        # Persist coins AND update main-mode high_score if beaten
+        # persist coins AND update main-mode high score if this run is a new best
         try:
             data = save.load_player_data() or {}
-            # update coins
             data["coins"] = int(data.get("coins", 0)) + coins_gained
-            # update high_score (only track main-mode high_score here)
             try:
                 prev_hs = int(data.get("high_score", 0))
             except Exception:
@@ -669,12 +668,12 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         try:
             data = save.load_player_data() or {}
             data["coins"] = int(data.get("coins", 0)) + coins_gained
-            # update high_score for main-mode runs if beaten by final_score
+            # update main-mode high score if this final_score is a new best
             try:
                 prev_hs = int(data.get("high_score", 0))
             except Exception:
                 prev_hs = 0
-            if int(final_score) > prev_hs:
+            if final_score > prev_hs:
                 data["high_score"] = int(final_score)
             save.save_player_data(data)
         except Exception:
@@ -1726,38 +1725,42 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                             pass
                         # apply powerup effects
                         if pick:
-                            ptype = str(pick.get("type", "")).lower()
-                            if ptype == "damage":
-                                amt = int(pick.get("amount", 0))
-                                sword_damage += amt
-                                projectile_damage_bonus += amt
-                            elif ptype == "attackspeed":
-                                try:
-                                    amt = float(pick.get("amount", 0.2))
-                                    attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
-                                except Exception:
-                                    pass
-                            elif ptype == "dashspeed":
-                                try:
-                                    amt = float(pick.get("amount",  0.2))
-                                    stamina_regen_rate = max(0.0, stamina_regen_rate * (1.0 + amt))
-                                except Exception:
-                                    pass
-                            elif ptype == "speed":
-                                try:
-                                    walk_mult = float(pick.get("walk_mult", 0.25))
-                                    dash_mult = float(pick.get("dash_mult", 0.20))
-                                    vel = vel * (1.0 + walk_mult)
-                                    dash_speed = dash_speed * (1.0 + dash_mult)
-                                except Exception:
-                                    pass
-                            elif ptype == "shield":
-                                shield_count += int(pick.get("amount", 1))
-                            elif ptype == "poison":
-                                try:
-                                    poison_level += int(pick.get("amount", 1))
-                                except Exception:
-                                    poison_level += 1
+                           
+                            try:
+                                ptype = str(pick.get("type", "")).lower()
+                                if ptype == "damage":
+                                    amt = int(pick.get("amount", 0))
+                                    sword_damage += amt
+                                    projectile_damage_bonus += amt
+                                elif ptype == "attackspeed":
+                                    try:
+                                        amt = float(pick.get("amount", 0.2))
+                                        attack_cooldown = int(max(0, attack_cooldown * (1.0 - amt)))
+                                    except Exception:
+                                        pass
+                                elif ptype == "dashspeed":
+                                    try:
+                                        amt = float(pick.get("amount", 0.2))
+                                        stamina_regen_rate = max(0.0, stamina_regen_rate * (1.0 + amt))
+                                    except Exception:
+                                        pass
+                                elif ptype == "speed":
+                                    try:
+                                        walk_mult = float(pick.get("walk_mult", 0.25))
+                                        dash_mult = float(pick.get("dash_mult", 0.20))
+                                        vel = vel * (1.0 + walk_mult)
+                                        dash_speed = dash_speed * (1.0 + dash_mult)
+                                    except Exception:
+                                        pass
+                                elif ptype == "shield":
+                                    shield_count += int(pick.get("amount", 1))
+                                elif ptype == "poison":
+                                    try:
+                                        poison_level += int(pick.get("amount", 1))
+                                    except Exception:
+                                        poison_level += 1
+                            except Exception:
+                                pass
                         # mark cleared and spawn portal at bottom-center
                         round_cleared = True
                         try:
