@@ -1,9 +1,8 @@
 import pygame
-import sys
+import sounds
+import save
 from pathlib import Path
 import os
-import sounds  # added for click SFX and master volume
-import save    # NEW: save/load utilities
 
 # master volume helper (non-breaking; defaults to 1.0)
 try:
@@ -364,25 +363,21 @@ def show_shop(snapshot, screen_surface):
     except Exception:
         pass
 
-    # load coin icon for top-right panel and set coins value
-    base = Path(__file__).parent
+    # initialize coins from save (fallback 5000)
+    try:
+        coins = int((save.load_player_data() or {}).get("coins", 5000))
+    except Exception:
+        coins = 5000
+
+    # load coin icon once
     coin_img = None
     try:
-        p = base.joinpath("sprites", "coin.png")
+        p = Path(__file__).parent.joinpath("sprites", "coin.png")
         if p.exists():
-            coin_img = pygame.image.load(str(p)).convert_alpha()
-            coin_img = pygame.transform.smoothscale(coin_img, (36, 36))
+            im = pygame.image.load(str(p)).convert_alpha()
+            coin_img = pygame.transform.smoothscale(im, (28, 28))
     except Exception:
         coin_img = None
-    if coin_img is None:
-        coin_img = pygame.Surface((36, 36), pygame.SRCALPHA)
-        pygame.draw.circle(coin_img, (212, 175, 55), (18, 18), 16)
-
-    # coins panel pulls from save so latest reward is shown
-    try:
-        coins = int((save.load_player_data() or {}).get("coins", PLAYER_COINS))  # uses 5000 default
-    except Exception:
-        coins = PLAYER_COINS
 
     # per-item descriptions (unique for each item) - make available for resolver
     weapons_desc = {
@@ -395,11 +390,16 @@ def show_shop(snapshot, screen_surface):
 
     # armors are materials (not specific pieces) — descriptions describe material properties
     armors_desc = {
-        "Wood": "Light material, offers minimal protection.",
-        "Iron": "Reliable material with balanced protection.",
-        "Diamond": "Exceptional durability and high protection.",
-        "Gold": "Soft but flashy; low protection, high weight.",
-        "Leather": "Flexible and light; eases movement."
+        # NEW: Swiftness Armor description
+        "Swiftness Armor": "Grants +50% movement speed and +5 damage.",
+        # NEW: Tank Armor description
+        "Tank Armor": "Grants knockback immunity; attackers are stunned.",
+        # NEW: Life Armor description
+        "Life Armor": "Grants +1 max heart.",
+        # NEW: Regen Armor description
+        "Regen Armor": "Regenerates 1 heart every 20s.",
+        # NEW: Thorns Armor description
+        "Thorns Armor": "Damages attackers on hit."
     }
 
     # NEW: description resolver used by modal and bottom preview
@@ -411,21 +411,24 @@ def show_shop(snapshot, screen_surface):
             return armors_desc[item_name]
         # substring match (e.g., variations like "Sword Mk II")
         for k, v in weapons_desc.items():
-            if k and k in item_name:
+            if k.lower() in item_name.lower():
                 return v
         for k, v in armors_desc.items():
-            if k and k in item_name:
+            if k.lower() in item_name.lower():
                 return v
         # generic fallbacks
         if any(tag in item_name for tag in ("Sword","Bow","Axe","Dagger","Spear","Katana","Mallet","Descender")):
-            return "A sharp blade. Effective at close range."
+            return "A reliable weapon."
         if any(tag in item_name for tag in ("Armor","Chestplate","Helmet","Shield","Boots","Greaves")):
-            return "Protective gear. Reduces incoming damage."
+            return "Protective gear."
         return "A reliable item."
 
     # items (placeholders)
     weapons = ["Sword", "Mallet", "Dagger", "Katana", "The Descender"]
-    armors = ["Armor 1", "Armor 2", "Armor 3", "Armor 4", "Armor 5"]
+    # UPDATED: rename fifth armor to Thorns Armor
+    armors = ["Swiftness Armor", "Tank Armor", "Life Armor", "Regen Armor", "Thorns Armor"]
+    # UPDATED: armor costs
+    armor_costs = {"Swiftness Armor": 150, "Tank Armor": 200, "Life Armor": 300, "Regen Armor": 400, "Thorns Armor": 275}
 
     # purchased / inventory state persists while shop is open (can be saved later)
     # First weapon (Sword) is already unlocked
@@ -441,68 +444,70 @@ def show_shop(snapshot, screen_surface):
         # NEW: merge saved upgrade levels first (so we don't drop previous progress)
         saved_up = saved.get("weapons_upgrades") or {}
         if isinstance(saved_up, dict):
-            for k, v in saved_up.items():
-                if k in weapons:
-                    try:
-                        # keep Sword >= 1; others may be 0 if not owned yet
-                        weapons_upgrades[k] = max(1 if k == "Sword" else 0, int(v))
-                    except Exception:
-                        pass
+            weapons_upgrades.update({k: int(v) for k, v in saved_up.items() if k in weapons})
         owned = saved.get("weapons_owned")
         if isinstance(owned, list):
-            for w in owned:
-                if w in weapons:
-                    weapons_purchased.add(w)
-                    # ensure owned weapons are at least level 1
-                    weapons_upgrades[w] = max(1, int(weapons_upgrades.get(w, 0)))
+            weapons_purchased.update([n for n in owned if n in weapons])
         eq_name = (saved.get("equipped_weapon") or "").strip()
         if eq_name in weapons:
             initial_equipped_idx = weapons.index(eq_name)
+        # NEW: load owned/equipped armors
+        a_owned = saved.get("armors_owned")
+        if isinstance(a_owned, list):
+            armors_purchased.update([n for n in a_owned if n in armors])
     except Exception:
         pass
 
     # NEW: helper to persist purchases into save.json
     def persist_shop_state():
         try:
-            data = save.load_player_data() or {}
-            data["weapons_owned"] = sorted(list(weapons_purchased))
-            # NEW: also persist upgrade levels
-            data["weapons_upgrades"] = {k: int(v) for k, v in weapons_upgrades.items()}
-            save.save_player_data(data)
+            save.save_player_data({
+                "weapons_owned": sorted(list(weapons_purchased)),
+                "weapons_upgrades": weapons_upgrades,
+                "armors_owned": sorted(list(armors_purchased)),
+            })
         except Exception:
             pass
 
     # NEW: helper to persist the equipped weapon
     def persist_equipped_weapon(name: str):
         try:
-            data = save.load_player_data() or {}
-            data["equipped_weapon"] = name
-            # ensure equipped is in owned
-            lst = set(data.get("weapons_owned") or [])
-            lst.add(name)
-            data["weapons_owned"] = sorted(lst)
-            save.save_player_data(data)
+            save.save_player_data({"equipped_weapon": name})
+        except Exception:
+            pass
+
+    # NEW: helper to persist the equipped armor
+    def persist_equipped_armor(name: str):
+        try:
+            save.save_player_data({"equipped_armor": name})
         except Exception:
             pass
 
     # NEW: helper to persist coins
     def persist_coins(value: int):
         try:
-            data = save.load_player_data() or {}
-            data["coins"] = int(value)
-            save.save_player_data(data)
+            save.save_player_data({"coins": int(value)})
         except Exception:
             pass
 
-    # NEW: default-equip Sword if nothing was equipped yet (persist it)
-    if initial_equipped_idx is None:
-        try:
+    # Ensure default equipped weapon is Sword for first-time players
+    try:
+        if initial_equipped_idx is None:
             initial_equipped_idx = weapons.index("Sword")
             persist_equipped_weapon("Sword")
-            # ensure Sword is level 1
-            weapons_upgrades["Sword"] = max(1, weapons_upgrades.get("Sword", 0))
-        except Exception:
-            initial_equipped_idx = 0
+    except Exception:
+        pass
+
+    # NEW: default-equip previously owned Swiftness Armor if nothing is equipped
+    try:
+        _saved2 = save.load_player_data() or {}
+        _eq_arm = (_saved2.get("equipped_armor") or "").strip()
+        armors_equipped = armors.index(_eq_arm) if _eq_arm in armors else None
+        if armors_equipped is None and "Swiftness Armor" in armors_purchased:
+            armors_equipped = armors.index("Swiftness Armor")
+            save.save_player_data({"equipped_armor": "Swiftness Armor"})
+    except Exception:
+        armors_equipped = None
 
     # Font for resolution display (smaller than other fonts)
     res_font_local = get_font(11)
@@ -516,7 +521,7 @@ def show_shop(snapshot, screen_surface):
 
     # Modal item detail view (shows large image, description, Buy/Back)
     def show_item_page(item_name: str, item_image: pygame.Surface):
-        nonlocal coins  # NEW: allow deducting coins on purchase
+        nonlocal coins, armors_equipped  # need to read equipped armor for label state
         sw2, sh2 = screen_surface.get_size()
         # build blurred background from the current screen for the modal
         try:
@@ -567,10 +572,13 @@ def show_shop(snapshot, screen_surface):
             "Katana": 400,
             "The Descender": 1000
         }
-        price = (weapon_price_map.get(item_name, 100)
-                 if item_name in weapons
-                 else 35 if "Armor" in item_name or "Chestplate" in item_name
-                 else 20)
+        # UPDATED: use armor_costs for armors, weapon map for weapons
+        if item_name in weapons:
+            price = weapon_price_map.get(item_name, 100)
+        elif item_name in armors:
+            price = armor_costs.get(item_name, 35)
+        else:
+            price = 20
 
         # resolve description using helper (consistent with bottom preview)
         desc = resolve_desc(item_name)
@@ -588,6 +596,12 @@ def show_shop(snapshot, screen_surface):
         def _is_equipped() -> bool:
             try:
                 return (item_name in weapons) and (weapons_equipped is not None) and (weapons[weapons_equipped] == item_name)
+            except Exception:
+                return False
+        # NEW: helper for armor equipped state
+        def _is_armor_equipped() -> bool:
+            try:
+                return (item_name in armors) and (armors_equipped is not None) and (armors[armors_equipped] == item_name)
             except Exception:
                 return False
 
@@ -611,7 +625,7 @@ def show_shop(snapshot, screen_surface):
 
         while True:
             dtm = clock_modal.tick(60)
-            # NEW: precompute action rects before event handling (so clicks work this frame)
+            # precompute action rects
             equip_rect = pygame.Rect(panel.left + 40, panel.bottom - 80, 140, 48)
             upgrade_rect = pygame.Rect(panel.left + 200, panel.bottom - 80, 140, 48)
 
@@ -624,80 +638,70 @@ def show_shop(snapshot, screen_surface):
                     mx2,my2 = ev2.pos
                     if not purchased:
                         if buy_rect.collidepoint((mx2,my2)):
-                            # UPDATED: use per-weapon buy price mapping
                             if item_name in weapons:
                                 cost = weapon_price_map.get(item_name, 100)
                                 if coins >= cost:
                                     coins -= cost
                                     persist_coins(coins)
-                                    try:
-                                        weapons_purchased.add(item_name)
-                                        weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))  # start at Lv1
-                                        persist_shop_state()
-                                    except Exception:
-                                        weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))
+                                    weapons_purchased.add(item_name)
+                                    weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))
+                                    persist_shop_state()
                                     try: sounds.play_sfx('SelectSound')
                                     except Exception: pass
                                     purchased = True
                                 else:
                                     try: sounds.play_sfx('SelectSound')
                                     except Exception: pass
-                            else:
-                                # non-weapon purchase flow unchanged
-                                purchased = True
-                                try:
-                                    if item_name in weapons:
-                                        weapons_purchased.add(item_name)
-                                        weapons_upgrades[item_name] = max(1, weapons_upgrades.get(item_name, 0))
-                                        persist_shop_state()
-                                except Exception:
-                                    pass
-                                try: sounds.play_sfx('SelectSound')
-                                except Exception: pass
+                            elif item_name in armors:
+                                cost = armor_costs.get(item_name, 35)
+                                if coins >= cost:
+                                    coins -= cost
+                                    persist_coins(coins)
+                                    armors_purchased.add(item_name)
+                                    persist_shop_state()
+                                    try: sounds.play_sfx('SelectSound')
+                                    except Exception: pass
+                                    purchased = True
+                                else:
+                                    try: sounds.play_sfx('SelectSound')
+                                    except Exception: pass
                         elif back_rect.collidepoint((mx2,my2)):
-                            # NEW: click SFX
                             try: sounds.play_sfx('SelectSound')
                             except Exception: pass
                             return ("back", None)
                     else:
-                        # after purchase show Equip / Upgrade buttons
                         if equip_rect.collidepoint((mx2,my2)):
-                            # UPDATED: disable click when already equipped
-                            if _is_equipped():
-                                try: sounds.play_sfx('SelectSound')
-                                except Exception: pass
-                            else:
-                                try:
-                                    if item_name in weapons:
-                                        weapons_purchased.add(item_name)
-                                        persist_shop_state()
-                                        persist_equipped_weapon(item_name)
-                                    elif item_name in armors:
-                                        armors_purchased.add(item_name)
-                                except Exception:
-                                    pass
+                            # Equip/Unequip weapon or armor
+                            if item_name in weapons:
+                                weapons_purchased.add(item_name)
+                                persist_shop_state()
+                                persist_equipped_weapon(item_name)
                                 try: sounds.play_sfx('SelectSound')
                                 except Exception: pass
                                 return ("equip", item_name)
-                        if upgrade_rect.collidepoint((mx2,my2)):
-                            # UPDATED: apply upgrade prices 100, 200, 300 with coin deduction
-                            if item_name in weapons:
-                                cur = _weapon_level()
-                                next_cost = _next_upgrade_cost(cur)
-                                if cur < 4 and next_cost is not None and coins >= next_cost:
-                                    coins -= next_cost
-                                    persist_coins(coins)
-                                    try:
-                                        weapons_upgrades[item_name] = min(4, cur + 1)
-                                        persist_shop_state()
-                                    except Exception:
-                                        weapons_upgrades[item_name] = min(4, cur + 1)
+                            elif item_name in armors:
+                                armors_purchased.add(item_name)
+                                persist_shop_state()
+                                if _is_armor_equipped():
+                                    # Unequip current armor
+                                    persist_equipped_armor("")
                                     try: sounds.play_sfx('SelectSound')
                                     except Exception: pass
+                                    return ("unequip", item_name)
                                 else:
+                                    persist_equipped_armor(item_name)
                                     try: sounds.play_sfx('SelectSound')
                                     except Exception: pass
-                            else:
+                                    return ("equip", item_name)
+                        # remove armor upgrade interaction: only allow upgrades for weapons
+                        if (item_name in weapons) and upgrade_rect.collidepoint((mx2,my2)):
+                            cur = _weapon_level()
+                            next_cost = _next_upgrade_cost(cur)
+                            if cur < 4 and next_cost is not None and coins >= next_cost:
+                                coins -= next_cost
+                                persist_coins(coins)
+                                weapons_upgrades[item_name] = min(4, cur + 1)
+                                persist_shop_state()
                                 try: sounds.play_sfx('SelectSound')
                                 except Exception: pass
                         if back_rect.collidepoint((mx2,my2)):
@@ -767,25 +771,22 @@ def show_shop(snapshot, screen_surface):
                 buy_color = (0,200,0) if buy_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
                 screen_surface.blit(small_font.render("Buy", True, buy_color), small_font.render("Buy", True, buy_color).get_rect(center=buy_rect.center))
             else:
+                # Equip (or Unequip for armors) always shown; Upgrade only for weapons
                 pygame.draw.rect(screen_surface, (200,200,200), equip_rect)
-                pygame.draw.rect(screen_surface, (200,200,200), upgrade_rect)
-                # UPDATED: show "Equipped" label if equipped, "Equip" otherwise
-                if _is_equipped():
-                    eq_label = "Equipped"
-                    eq_col = (80,80,80)
+                if item_name in weapons:
+                    eq_label = "Equipped" if _is_equipped() else "Equip"
+                    eq_col = (80,80,80) if _is_equipped() else ((0,200,0) if equip_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0))
                 else:
-                    eq_label = "Equip"
+                    is_eq = _is_armor_equipped()
+                    eq_label = "Unequip" if is_eq else "Equip"
                     eq_col = (0,200,0) if equip_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
-                cur_level = weapons_upgrades.get(item_name, 0) if item_name in weapons_upgrades else 0
-                # UPDATED: cap at level 4; button text fixed to "Upgrade"
-                if cur_level >= 4:
-                    up_label = "Max"
-                    up_col = (80,80,80)
-                else:
-                    up_label = "Upgrade"  # CHANGED: remove bonus tag in label
-                    up_col = (0,200,0) if upgrade_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0)
                 screen_surface.blit(small_font.render(eq_label, True, eq_col), small_font.render(eq_label, True, eq_col).get_rect(center=equip_rect.center))
-                screen_surface.blit(small_font.render(up_label, True, up_col), small_font.render(up_label, True, up_col).get_rect(center=upgrade_rect.center))
+                if item_name in weapons:
+                    pygame.draw.rect(screen_surface, (200,200,200), upgrade_rect)
+                    cur_level = weapons_upgrades.get(item_name, 0)
+                    up_label = "Max" if cur_level >= 4 else "Upgrade"
+                    up_col = (80,80,80) if cur_level >= 4 else ((0,200,0) if upgrade_rect.collidepoint(pygame.mouse.get_pos()) else (0,0,0))
+                    screen_surface.blit(small_font.render(up_label, True, up_col), small_font.render(up_label, True, up_col).get_rect(center=upgrade_rect.center))
 
             # Back button (always present)
             pygame.draw.rect(screen_surface, (200,200,200), back_rect)
@@ -820,7 +821,7 @@ def show_shop(snapshot, screen_surface):
     for name in weapons:
         weapons_imgs.setdefault(name, generic_img)
 
-    # load placeholder image
+    # load placeholder image (fallback for armors)
     base = Path(__file__).parent
     sword_img = None
     try:
@@ -834,6 +835,27 @@ def show_shop(snapshot, screen_surface):
         sword_img = pygame.Surface((96, 96), pygame.SRCALPHA)
         pygame.draw.polygon(sword_img, (200, 200, 200), [(8,88),(48,8),(88,88)])
 
+    # NEW: load armor images (actual art per armor)
+    armors_imgs = {}
+    _armor_img_map = {
+        "Swiftness Armor": "swiftness_armor.png",
+        "Tank Armor": "tank_armor.png",
+        "Life Armor": "life_armor.png",
+        "Regen Armor": "regen_armor.png",
+        "Thorns Armor": "thorns_armor.png",
+    }
+    for aname, fname in _armor_img_map.items():
+        try:
+            p = base.joinpath("sprites", fname)
+            if p.exists():
+                img = pygame.image.load(str(p)).convert_alpha()
+                img = pygame.transform.smoothscale(img, (img_size, img_size))
+                armors_imgs[aname] = img
+        except Exception:
+            pass
+    for name in armors:
+        armors_imgs.setdefault(name, sword_img)
+
     # scrolling state (px offsets)
     weapons_offset = 0
     armors_offset = 0
@@ -843,7 +865,13 @@ def show_shop(snapshot, screen_surface):
     focused_row = "weapons"  # or "armors"
     # equipped indices (None == nothing equipped)
     weapons_equipped = initial_equipped_idx  # NEW: preselect equipped from save or default Sword
-    armors_equipped = None
+    # NEW: preselect equipped armor from save
+    try:
+        _saved2 = save.load_player_data() or {}
+        _eq_arm = (_saved2.get("equipped_armor") or "").strip()
+        armors_equipped = armors.index(_eq_arm) if _eq_arm in armors else None
+    except Exception:
+        armors_equipped = None
     row_gap = 220
     margin_x = 120
     item_w = 120
@@ -968,18 +996,24 @@ def show_shop(snapshot, screen_surface):
         overlay.fill((0,0,0,140))
         screen_surface.blit(overlay, (0,0))
 
-        # draw coin panel in the top-right corner
+        # draw coin panel with icon and rounded borders
         coin_panel = pygame.Rect(sw - 220, 12, 200, 48)
         try:
-            pygame.draw.rect(screen_surface, (40,40,40), coin_panel)
-            pygame.draw.rect(screen_surface, (120,120,120), coin_panel, 2)
-            # blit coin image at left side of the panel
-            screen_surface.blit(coin_img, (coin_panel.left + 8, coin_panel.top + (coin_panel.height - coin_img.get_height())//2))
-            coin_font = get_font(20)
-            coin_surf = coin_font.render(f"{coins}", True, (212,175,55))
-            screen_surface.blit(coin_surf, coin_surf.get_rect(midleft=(coin_panel.left + 56, coin_panel.centery)))
+            pygame.draw.rect(screen_surface, (30,30,30), coin_panel, border_radius=10)
+            pygame.draw.rect(screen_surface, (120,120,120), coin_panel, 2, border_radius=10)
+            gold = (212,175,55)
+            cx = coin_panel.left + 12
+            cy = coin_panel.centery
+            if coin_img:
+                img_rect = coin_img.get_rect(center=(cx + coin_img.get_width()//2, cy))
+                screen_surface.blit(coin_img, img_rect.topleft)
+                text_x = img_rect.right + 8
+            else:
+                text_x = coin_panel.left + 10
+            txt = btn_f.render(str(int(coins)), True, gold)
+            ty = coin_panel.centery - txt.get_height()//2
+            screen_surface.blit(txt, (text_x, ty))
         except Exception:
-            # defensive: ignore coin panel drawing errors
             pass
 
         panel_w, panel_h = sw - 160, sh - 160
@@ -1148,10 +1182,39 @@ def show_shop(snapshot, screen_surface):
             item_rect = pygame.Rect(x, y_armors, item_w, 120)
             if item_rect.right >= panel.left + 10 and item_rect.left <= panel.right - 10:
                 pygame.draw.rect(screen_surface, (50,50,50), item_rect)
-                screen_surface.blit(sword_img, sword_img.get_rect(center=item_rect.center))
-                pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
-            elif i == armors_selected and focused_row == "armors":
-                pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
+                # UPDATED: use armor-specific image
+                img = armors_imgs.get(name, sword_img)
+                screen_surface.blit(img, img.get_rect(center=item_rect.center))
+                # draw name below, wrapped to two lines
+                try:
+                    max_name_w = item_w + 16
+                    name_lines = wrap_name_lines(name, item_f, max_name_w, 2)
+                    line_h = item_f.get_linesize()
+                    start_y = item_rect.bottom + 6
+                    for j, line in enumerate(name_lines):
+                        nm = item_f.render(line, True, (220,220,220))
+                        screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, start_y + j * (line_h + 2))))
+                except Exception:
+                    nm = item_f.render(name, True, (220,220,220))
+                    screen_surface.blit(nm, nm.get_rect(midtop=(item_rect.centerx, item_rect.bottom + 8)))
+
+                # dim/lock overlay for unpurchased armors
+                if name not in armors_purchased:
+                    try:
+                        lock_s = pygame.Surface((item_rect.width, item_rect.height), pygame.SRCALPHA)
+                        lock_s.fill((0,0,0,160))
+                        screen_surface.blit(lock_s, item_rect.topleft)
+                        lock_font = get_font(14)
+                        lock_surf = lock_font.render("Locked", True, (180,80,80))
+                        screen_surface.blit(lock_surf, lock_surf.get_rect(center=item_rect.center))
+                    except Exception:
+                        pygame.draw.rect(screen_surface, (30,30,30), item_rect)
+
+                # outline equipped (green) and focused (gold)
+                if armors_equipped == i:
+                    pygame.draw.rect(screen_surface, (0,200,0), item_rect, 3)
+                elif i == armors_selected and focused_row == "armors":
+                    pygame.draw.rect(screen_surface, (255,220,80), item_rect, 3)
 
         # handle clicks on armor arrows/items
         if clicked_pos:
@@ -1175,17 +1238,24 @@ def show_shop(snapshot, screen_surface):
                     if item_rect.collidepoint((mx,my)):
                         armors_selected = i
                         focused_row = "armors"
-                        # NEW: click SFX on opening item page
                         try: sounds.play_sfx('SelectSound')
                         except Exception: pass
-                        # open item detail page (armor uses same placeholder image)
                         try:
-                            res = show_item_page(armors[i], sword_img)
+                            # UPDATED: pass the correct armor image to modal
+                            res = show_item_page(armors[i], armors_imgs.get(armors[i], sword_img))
                             if res and res[0] == "equip":
                                 armors_purchased.add(res[1])
                                 try:
                                     idx = armors.index(res[1])
                                     armors_equipped = idx
+                                    persist_equipped_armor(res[1])
+                                except Exception:
+                                    pass
+                            if res and res[0] == "unequip":
+                                # clear equipped armor
+                                armors_equipped = None
+                                try:
+                                    persist_equipped_armor("")
                                 except Exception:
                                     pass
                         except Exception:
@@ -1555,6 +1625,7 @@ def show_howto(snapshot, screen_surface):
 
         # simple scrollbar
         if max_scroll > 0:
+           
             bar = pygame.Rect(text_rect.right + 6, text_rect.top, 6, text_rect.height)
             pygame.draw.rect(screen_surface, (70,70,70), bar)
             thumb_h = max(24, int(text_rect.height * (text_rect.height / (total_h + 1))))
@@ -1613,7 +1684,7 @@ def stop_menu_music():
         pass
     _menu_music_started = False
 def show_play_mode(snapshot, screen_surface):
-    """Modal to pick play mode. Returns 'howto'|'main' or None if cancelled."""
+    """Modal to pick play mode. Returns 'howto'|'main'|'endless' or None if cancelled."""
     sw, sh = screen_surface.get_size()
     # make blurred background from snapshot if provided
     if snapshot:
@@ -1623,9 +1694,10 @@ def show_play_mode(snapshot, screen_surface):
         except Exception:
             bg = load_background("Background", (sw, sh))
     else:
-        bg = load_background("Background", (sw, sh))
+               bg = load_background("Background", (sw, sh))
 
     title_f = get_font(44)
+
     btn_f = get_font(28)
     clock_local = pygame.time.Clock()
     try:
@@ -1633,22 +1705,23 @@ def show_play_mode(snapshot, screen_surface):
     except Exception:
         pass
 
-    # two large buttons
-    panel_w = min(840, max(520, sw - 200))
+    # three side-by-side buttons
+    panel_w = min(900, max(540, sw - 200))
     panel_h = min(360, max(240, int(sh * 0.32)))
     panel = pygame.Rect((sw-panel_w)//2, (sh-panel_h)//2, panel_w, panel_h)
 
     padding_x = 40
     padding_y = 48
     inner_w = panel_w - padding_x*2
-    spacing = 30
-    btn_w = int((inner_w - spacing) / 2)
+    spacing = 20
+    btn_w = int((inner_w - spacing*2) / 3)
     btn_h = 70
     btn_y = panel.top + padding_y + 40
 
     left_x = panel.left + padding_x
-    howto_rect = pygame.Rect(left_x, btn_y, btn_w, btn_h)
-    main_rect = pygame.Rect(left_x + btn_w + spacing, btn_y, btn_w, btn_h)
+    howto_rect = pygame.Rect(left_x + (btn_w + spacing) * 0, btn_y, btn_w, btn_h)
+    main_rect = pygame.Rect(left_x + (btn_w + spacing) * 1, btn_y, btn_w, btn_h)
+    endless_rect = pygame.Rect(left_x + (btn_w + spacing) * 2, btn_y, btn_w, btn_h)
 
     while True:
         for ev in pygame.event.get():
@@ -1663,17 +1736,17 @@ def show_play_mode(snapshot, screen_surface):
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mx, my = ev.pos
                 if howto_rect.collidepoint((mx, my)):
-                    try:
-                        sounds.play_sfx('SelectSound')
-                    except Exception:
-                        pass
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return "howto"
                 if main_rect.collidepoint((mx, my)):
-                    try:
-                        sounds.play_sfx('SelectSound')
-                    except Exception:
-                        pass
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
                     return "main"
+                if endless_rect.collidepoint((mx, my)):
+                    try: sounds.play_sfx('SelectSound')
+                    except Exception: pass
+                    return "endless"
 
         # draw
         screen_surface.blit(bg, (0,0))
@@ -1689,11 +1762,43 @@ def show_play_mode(snapshot, screen_surface):
         mouse = pygame.mouse.get_pos()
         h_col = (0,200,0) if howto_rect.collidepoint(mouse) else (0,0,0)
         m_col = (0,200,0) if main_rect.collidepoint(mouse) else (0,0,0)
+        e_col = (0,200,0) if endless_rect.collidepoint(mouse) else (0,0,0)
 
         pygame.draw.rect(screen_surface, (200,200,200), howto_rect)
         pygame.draw.rect(screen_surface, (200,200,200), main_rect)
-        screen_surface.blit(btn_f.render("How to Play", True, h_col), btn_f.render("How to Play", True, h_col).get_rect(center=howto_rect.center))
-        screen_surface.blit(btn_f.render("Main Game", True, m_col), btn_f.render("Main Game", True, m_col).get_rect(center=main_rect.center))
+        pygame.draw.rect(screen_surface, (200,200,200), endless_rect)
+
+        # NEW: wrapped button labels (up to two lines) to avoid overlap
+        def _draw_button_label(text: str, color, rect: pygame.Rect):
+            max_w = rect.width - 16
+            words = (text or "").split()
+            lines, cur = [], ""
+            for w in words:
+                test = (cur + " " + w).strip()
+                try:
+                    fits = btn_f.size(test)[0] <= max_w
+                except Exception:
+                    fits = True
+                if fits:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = w
+            if cur:
+                lines.append(cur)
+            if len(lines) > 2:
+                lines = [lines[0], " ".join(lines[1:])]
+            line_h = btn_f.get_linesize()
+            total_h = max(line_h, len(lines) * line_h)
+            start_y = rect.centery - total_h // 2 + line_h // 2
+            for i, ln in enumerate(lines):
+                s = btn_f.render(ln, True, color)
+                screen_surface.blit(s, s.get_rect(center=(rect.centerx, start_y + i * line_h)))
+
+        _draw_button_label("How to Play", h_col, howto_rect)
+        _draw_button_label("Main Game", m_col, main_rect)
+        _draw_button_label("Endless Mode", e_col, endless_rect)
 
         pygame.display.update()
         clock_local.tick(60)
@@ -1805,22 +1910,25 @@ def run_menu():
                         snap = SCREEN.copy()
                     except Exception:
                         snap = None
-                    # NEW: first pick play mode
                     mode = show_play_mode(snap, SCREEN)
                     if mode is None:
                         pass
                     elif mode == "howto":
-                        # Show How to Play text (keep menu music running)
                         show_howto(snap, SCREEN)
+                    elif mode == "endless":
+                        # NEW: start Endless immediately (no difficulty picker), default to "normal"
+                        stop_menu_music()
+                        import main
+                        main.run_game(SCREEN, difficulty="normal", mode="endless")
+                        start_menu_music()
                     else:
-                        # Main game -> then pick difficulty as before
                         chosen = show_difficulty(snap, SCREEN)
                         if chosen is None:
                             pass
                         else:
                             stop_menu_music()
                             import main
-                            main.run_game(SCREEN, difficulty=chosen)
+                            main.run_game(SCREEN, difficulty=chosen, mode="main")
                             start_menu_music()
                     create_assets()
                 elif buttons[1].is_clicked((mx, my)):

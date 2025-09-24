@@ -149,7 +149,7 @@ def show_pause_overlay(snapshot, screen_surface):
 		pygame.display.update()
 		clock.tick(60)
 
-def show_death_screen(screen_surface, score: int = 0, coins: int = 0):
+def show_death_screen(screen_surface, score: int = 0, coins: int = 0, high_score: int | None = None):
 		"""Block until user clicks Quit to Main Menu. Returns when user chooses to quit."""
 		sw, sh = screen_surface.get_size()
 		clock = pygame.time.Clock()
@@ -216,9 +216,14 @@ def show_death_screen(screen_surface, score: int = 0, coins: int = 0):
 			# NEW: score and coins earned lines
 			try:
 				score_s = info_f.render(f"Score: {int(score)}", True, (220,220,220))
-				coins_s = info_f.render(f"+{int(coins)} coins", True, (212,175,55))
 				screen_surface.blit(score_s, score_s.get_rect(center=(sw//2, panel.top + 110)))
-				screen_surface.blit(coins_s, coins_s.get_rect(center=(sw//2, panel.top + 140)))
+				# Endless mode: show High Score; hide coins when coins==0 and high_score is provided
+				if high_score is not None:
+					hs_s = info_f.render(f"High Score: {int(high_score)}", True, (180,220,180))
+					screen_surface.blit(hs_s, hs_s.get_rect(center=(sw//2, panel.top + 140)))
+				elif int(coins) != 0:
+					coins_s = info_f.render(f"+{int(coins)} coins", True, (212,175,55))
+					screen_surface.blit(coins_s, coins_s.get_rect(center=(sw//2, panel.top + 140)))
 			except Exception:
 				pass
 

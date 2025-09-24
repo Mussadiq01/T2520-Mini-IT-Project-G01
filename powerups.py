@@ -334,12 +334,5 @@ def choose_powerup(snapshot, screen_surface) -> Tuple[Optional[Dict], int]:
                     pygame.draw.rect(screen_surface, (0,0,0), bg_rect)
                 screen_surface.blit(lbl_surf, lbl_rect)
 
-        # guard hint (pre-click countdown)
-        if not clicks_enabled:
-            remain = max(0, min_click_delay_ms - elapsed)
-            txt = f"Get ready... {remain//1000}.{(remain%1000)//100}s"
-            guard_surf = info_f.render(txt, True, (200, 160, 60))
-            screen_surface.blit(guard_surf, (10, 10))
-
         pygame.display.update()
         clock.tick(60)
