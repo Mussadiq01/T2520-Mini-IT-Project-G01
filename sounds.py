@@ -1,22 +1,11 @@
 import pygame
 from pathlib import Path
-from typing import Dict, Optional
-
-# Simple sound / music manager for the project.
-# Usage:
-#   import sounds
-#   sounds.play_music('menu_theme.ogg')
-#   sounds.play_sfx('swing.wav')
-#   sounds.set_master_volume(0.5)
-#   sounds.stop_music()
-#
-# Put your audio files in a folder named 'sounds' or 'audio' at project root.
-# Supported extensions for SFX: .wav .ogg .mp3
-# For music you pass the exact filename (looked up in the same folders).
+from typing import Optional, Dict
 
 BASE_DIR = Path(__file__).parent
 SOUND_DIRS = [BASE_DIR / 'sounds', BASE_DIR / 'audio']
 SUPPORTED_SFX_EXT = ('.wav', '.ogg', '.mp3')
+
 
 class SoundManager:
     def __init__(self):
@@ -27,42 +16,70 @@ class SoundManager:
         self.sfx_volume = 1.0
         self.master_volume = 1.0
 
+        # Try to load persisted master volume from save.py (non-fatal)
+        try:
+            # local import to avoid coupling at module import time elsewhere
+            import save
+            data = save.load_player_data() or {}
+            mv = data.get("master_volume")
+            if mv is not None:
+                try:
+                    mvf = float(mv)
+                    self.master_volume = max(0.0, min(1.0, mvf))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Apply loaded master volume to mixer if available
+        try:
+            if self._mixer_ready:
+                try:
+                    pygame.mixer.music.set_volume(self.music_volume * self.master_volume)
+                except Exception:
+                    pass
+                try:
+                    chs = pygame.mixer.get_num_channels()
+                    for i in range(chs):
+                        try:
+                            # multiply channel by sfx_volume as channels represent sfx outputs
+                            pygame.mixer.Channel(i).set_volume(self.sfx_volume * self.master_volume)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _ensure_mixer(self):
         if self._mixer_ready:
             return
         try:
-            if not pygame.get_init():
-                pygame.init()
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
+            pygame.init()
+            pygame.mixer.init()
             self._mixer_ready = True
         except Exception:
             self._mixer_ready = False
 
-    # ---------- File Lookup Helpers ----------
     def _find_file(self, name: str) -> Optional[Path]:
         p = Path(name)
         if p.is_file():
             return p
-        # try each sound directory; for SFX allow extension guessing
         for d in SOUND_DIRS:
             if not d.exists():
                 continue
-            # exact name first
             exact = d / name
             if exact.exists():
                 return exact
-            # guess extensions for sfx names without extension
             if not p.suffix:
                 for ext in SUPPORTED_SFX_EXT:
-                    cand = d / f"{name}{ext}"
-                    if cand.exists():
-                        return cand
+                    candidate = d / f"{name}{ext}"
+                    if candidate.exists():
+                        return candidate
         return None
 
     # ---------- Music ----------
     def play_music(self, filename: str, volume: float = 1.0, loops: int = -1, fade_ms: int = 600):
-        self._ensure_mixer()
         if not self._mixer_ready:
             return
         path = self._find_file(filename)
@@ -82,8 +99,8 @@ class SoundManager:
         except Exception:
             pass
 
-    def set_music_volume(self, v: float):
-        self.music_volume = max(0.0, min(1.0, v))
+    def set_music_volume(self, volume: float):
+        self.music_volume = max(0.0, min(1.0, volume))
         try:
             pygame.mixer.music.set_volume(self.music_volume * self.master_volume)
         except Exception:
@@ -91,7 +108,6 @@ class SoundManager:
 
     # ---------- SFX ----------
     def load_sfx(self, name: str) -> Optional[pygame.mixer.Sound]:
-        self._ensure_mixer()
         if not self._mixer_ready:
             return None
         key = name.lower()
@@ -118,12 +134,11 @@ class SoundManager:
         except Exception:
             pass
 
-    def set_sfx_volume(self, v: float):
-        self.sfx_volume = max(0.0, min(1.0, v))
+    def set_sfx_volume(self, volume: float):
+        self.sfx_volume = max(0.0, min(1.0, volume))
 
-    def set_master_volume(self, v: float):
-        self.master_volume = max(0.0, min(1.0, v))
-        # refresh music volume immediately
+    def set_master_volume(self, volume: float):
+        self.master_volume = max(0.0, min(1.0, volume))
         try:
             pygame.mixer.music.set_volume(self.music_volume * self.master_volume)
         except Exception:
@@ -131,8 +146,8 @@ class SoundManager:
 
     # ---------- Utilities ----------
     def preload(self, *names: str):
-        for n in names:
-            self.load_sfx(n)
+        for name in names:
+            self.load_sfx(name)
 
     def pause_all(self):
         try:
@@ -152,22 +167,39 @@ class SoundManager:
         except Exception:
             pass
 
+
 # Global singleton
 manager = SoundManager()
 
-# Convenience module-level functions
+# Module-level MASTER_VOLUME kept in sync for existing code that inspects sounds.MASTER_VOLUME
+MASTER_VOLUME = manager.master_volume
+
+# Convenience functions
 play_music = manager.play_music
 stop_music = manager.stop_music
 play_sfx = manager.play_sfx
 set_music_volume = manager.set_music_volume
 set_sfx_volume = manager.set_sfx_volume
+# keep original alias for master volume setter
 set_master_volume = manager.set_master_volume
+# wrapper so module-level MASTER_VOLUME stays in sync
+def _set_master_volume_wrapper(volume: float):
+    try:
+        manager.set_master_volume(volume)
+    except Exception:
+        pass
+    global MASTER_VOLUME
+    try:
+        MASTER_VOLUME = manager.master_volume
+    except Exception:
+        MASTER_VOLUME = float(getattr(manager, 'master_volume', 1.0))
+set_master_volume = _set_master_volume_wrapper
 pause_all = manager.pause_all
 resume_all = manager.resume_all
 stop_all_sfx = manager.stop_all_sfx
 preload = manager.preload
 
 __all__ = [
-    'play_music','stop_music','play_sfx','set_music_volume','set_sfx_volume',
-    'set_master_volume','pause_all','resume_all','stop_all_sfx','preload','manager'
+    'play_music', 'stop_music', 'play_sfx', 'set_music_volume', 'set_sfx_volume',
+    'set_master_volume', 'pause_all', 'resume_all', 'stop_all_sfx', 'preload', 'manager', 'MASTER_VOLUME'
 ]

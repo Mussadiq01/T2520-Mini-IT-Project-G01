@@ -1,7 +1,15 @@
 import pygame
 from pathlib import Path
 import random
-import sounds  # added for selection SFX and master volume
+from typing import Tuple, Optional, Dict
+
+# optional sounds (fail-safe if unavailable)
+try:
+    import sounds
+except Exception:
+    sounds = None
+
+BASE_DIR = Path(__file__).parent
 
 # ensure MASTER_VOLUME exists
 try:
@@ -75,7 +83,7 @@ def _wrap_render(font, text, color, max_width, max_lines=2, line_spacing=2):
         y += s.get_height() + line_spacing
     return surf
 
-def choose_powerup(snapshot, screen_surface):
+def choose_powerup(snapshot, screen_surface) -> Tuple[Optional[Dict], int]:
     """Display 3 cards (damage/attackspeed/dashspeed/speed). Returns (pick_dict_or_None, elapsed_ms)."""
     sw, sh = screen_surface.get_size()
 
@@ -154,12 +162,12 @@ def choose_powerup(snapshot, screen_surface):
 
     # define candidate powerups
     pool = [
-        {"id": "damage", "type": "damage", "amount": 5, "label": "+5 Damage"},
+        {"id": "damage", "type": "damage", "amount": 2, "label": "+2 Damage"},
         {"id": "attackspeed", "type": "attackspeed", "amount": 0.20, "label": "+20% Attack Recovery"},
         {"id": "dashspeed", "type": "dashspeed", "amount": 0.20, "label": "+20% Dash Recovery"},
         {"id": "speed", "type": "speed", "walk_mult": 0.25, "dash_mult": 0.20, "label": "+25% Speed"},
         {"id": "shield", "type": "shield", "amount": 1, "label": "+1 Rotating Shield"},
-        {"id": "poison", "type": "poison", "amount": 1, "label": "Poison Touch"},  # NEW
+        {"id": "poison", "type": "poison", "amount": 1, "label": "+Poison Touch DMG"},  # NEW
     ]
 
     # randomly pick three distinct cards to show
@@ -189,8 +197,16 @@ def choose_powerup(snapshot, screen_surface):
     label_color_normal = (80, 200, 120)
     label_color_hover = (120, 240, 140)
 
+    # 0.5s pre-click guard
+    min_click_delay_ms = 500
+    start_clicks = pygame.time.get_ticks()
+    clicks_enabled = False
+
     # main event/draw loop (single, consistent loop)
     while True:
+        elapsed = pygame.time.get_ticks() - start_clicks
+        clicks_enabled = elapsed >= min_click_delay_ms
+
         for ev in pygame.event.get():
             # Do NOT allow skip; QUIT picks a random card
             if ev.type == pygame.QUIT:
@@ -210,14 +226,21 @@ def choose_powerup(snapshot, screen_surface):
                 mx, my = ev.pos
                 for i, r in enumerate(cards):
                     if r.collidepoint((mx, my)):
-                        pick = choices[i]
-                        elapsed = pygame.time.get_ticks() - start_ticks
-                        try:
-                            sounds.play_sfx('SelectSound')
-                        except Exception:
-                            pass
-                        _apply_master_volume()
-                        return pick, elapsed
+                        if clicks_enabled:
+                            pick = choices[i]
+                            elapsed = pygame.time.get_ticks() - start_ticks
+                            try:
+                                sounds.play_sfx('SelectSound')
+                            except Exception:
+                                pass
+                            _apply_master_volume()
+                            return pick, elapsed
+                        else:
+                            # show countdown hint (0.5s)
+                            remain = max(0, min_click_delay_ms - elapsed)
+                            txt = f"Get ready... {remain//1000}.{(remain%1000)//100}s"
+                            guard_s = info_f.render(txt, True, (200, 160, 60))
+                            screen_surface.blit(guard_s, (10, 10))
 
         # draw background + dark overlay
         screen_surface.blit(bg, (0, 0))

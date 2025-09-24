@@ -1,40 +1,48 @@
 import json
-import os
 from pathlib import Path
-from typing import Any, Dict, Optional
 
-BASE_DIR = Path(__file__).parent
-SAVE_PATH = BASE_DIR / "save.json"
+# Path to save file
+SAVE_PATH = Path(__file__).parent / "save.json"
 
-def _atomic_write(path: Path, data: str) -> None:
-	# Write to a temp file then replace to avoid partial writes
-	tmp = path.with_suffix(path.suffix + ".tmp")
-	with open(tmp, "w", encoding="utf-8") as f:
-		f.write(data)
-	try:
-		os.replace(tmp, path)
-	except Exception:
-		# fallback if replace not available
-		try:
-			tmp.rename(path)
-		except Exception:
-			pass
+def save_player_data(data: dict) -> bool:
+    """
+    Save player data to save.json.
+    Merges with existing data if the file exists.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        # Load existing data if available
+        if SAVE_PATH.exists():
+            existing = json.loads(SAVE_PATH.read_text())
+        else:
+            existing = {}
 
-def save_player_data(data: Dict[str, Any]) -> bool:
-	"""Save player data to save.json. Returns True on success."""
-	try:
-		payload = json.dumps(data or {}, ensure_ascii=False, indent=2)
-		_atomic_write(SAVE_PATH, payload)
-		return True
-	except Exception:
-		return False
+        # Merge existing data with new data
+        merged = {**existing, **data}
 
-def load_player_data() -> Optional[Dict[str, Any]]:
-	"""Load player data if present, else None."""
-	try:
-		if not SAVE_PATH.exists():
-			return None
-		with open(SAVE_PATH, "r", encoding="utf-8") as f:
-			return json.load(f)
-	except Exception:
-		return None
+        # Save merged data back to file
+        SAVE_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2))
+        return True
+    except Exception:
+        return False
+
+
+def load_player_data() -> dict:
+    """
+    Load player data from save.json.
+    Always ensures 'coins' key exists with default value 5000.
+    Returns a dictionary.
+    """
+    try:
+        # Load data if file exists
+        if SAVE_PATH.exists():
+            data = json.loads(SAVE_PATH.read_text())
+        else:
+            data = {}
+
+        # Ensure default coins
+        data.setdefault("coins", 5000)
+        return data
+    except Exception:
+        # Safe default if file is missing or corrupt
+        return {"coins": 5000}
