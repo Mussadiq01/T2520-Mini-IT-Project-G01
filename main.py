@@ -9,7 +9,7 @@ import pause  # NEW: pause + death screens
 import powerups  # NEW: powerup selection UI
 import sounds  # NEW: gameplay music volume reference
 from weapons import WEAPON_LIST  # NEW: weapon definitions
-import save  # NEW: read purchased weapons from save.json
+import save  # ADDED: ensure save module imported for high score persistence
 
 BASE_DIR = Path(__file__).parent
 def asset_path(*parts):
@@ -17,6 +17,12 @@ def asset_path(*parts):
 
 # gameplay music helpers (added)
 _game_music_started = False
+
+def resource_path(relative_path):
+    """ Get the absolute path to a resource, works for dev & for PyInstaller .exe """
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 def _find_play_music(mode: str | None = None):
     base = Path(__file__).parent
@@ -317,7 +323,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         current_projectile_img = None
         if current_weapon.projectile_damage > 0:
             try:
-                current_projectile_img = load_sprite(current_weapon.projectile_sprite or "sunball.png", size=48)
+                current_projectile_img = load_sprite(current_weapon.projectile_sprite or "sunball.png", size=32)
             except Exception:
                 current_projectile_img = None
 
@@ -620,37 +626,31 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
         nonlocal score
         # Endless: no coins, update high score instead
         if is_endless:
-            high_score = int(score)
             try:
                 data = save.load_player_data() or {}
                 prev = int(data.get("endless_high_score", 0))
-                if high_score > prev:
-                    data["endless_high_score"] = high_score
+                if int(score) > prev:
+                    data["endless_high_score"] = int(score)
                     save.save_player_data(data)
-                else:
-                    high_score = prev
+                # fetch (possibly updated) best for display
+                best_endless = int((save.load_player_data() or {}).get("endless_high_score", 0))
             except Exception:
-                pass
+                best_endless = 0
+            # show death screen (coins 0, use high_score param to display endless best)
             try:
-                # show Game Over with high score; coins fixed to 0 in endless
-                pause.show_death_screen(win, score=int(score), coins=0, high_score=high_score)
+                from pause import show_death_screen
+                show_death_screen(win, score=int(score), coins=0, high_score=best_endless)
             except Exception:
                 pass
-            return
-        # UPDATED: coins are based on already-scaled score (do not multiply again)
+            return  # ENDLESS path finished
+        # UPDATED: campaign high score safeguard
         coins_gained = int(score // 50)
-        # Persist coins AND update main-mode high_score if beaten
         try:
             data = save.load_player_data() or {}
-            # update coins
-            data["coins"] = int(data.get("coins", 0)) + coins_gained
-            # update high_score (only track main-mode high_score here)
-            try:
-                prev_hs = int(data.get("high_score", 0))
-            except Exception:
-                prev_hs = 0
-            if int(score) > prev_hs:
+            prev_main = int(data.get("high_score", 0))
+            if int(score) > prev_main:
                 data["high_score"] = int(score)
+            data["coins"] = int(data.get("coins", 0)) + coins_gained
             save.save_player_data(data)
         except Exception:
             pass
@@ -2464,6 +2464,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                             break
 
         pygame.display.update()
+        
 # ======================
 # START GAME
 # ======================

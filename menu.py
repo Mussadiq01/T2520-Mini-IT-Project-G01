@@ -1798,7 +1798,7 @@ def show_play_mode(snapshot, screen_surface):
                 screen_surface.blit(s, s.get_rect(center=(rect.centerx, start_y + i * line_h)))
 
         _draw_button_label("How to Play", h_col, howto_rect)
-        _draw_button_label("Main Game", m_col, main_rect)
+        _draw_button_label("Campaign Mode", m_col, main_rect)
         _draw_button_label("Endless Mode", e_col, endless_rect)
 
         pygame.display.update()
@@ -2008,25 +2008,31 @@ def run_menu():
             SCREEN.blit(outline_surf, rect.move(ox, oy))
         SCREEN.blit(title_surf, rect)
 
-        # High score display (top-right). Show MAIN-mode high score only.
+        # High score display (top-right). Show MAIN & ENDLESS best scores.
         try:
             _sd = save.load_player_data() or {}
             try:
-                _hs = int(float(_sd.get("high_score", 0)))
+                _hs_main = int(float(_sd.get("high_score", 0)))
             except Exception:
-                _hs = 0
+                _hs_main = 0
+            try:
+                _hs_endless = int(float(_sd.get("endless_high_score", 0)))
+            except Exception:
+                _hs_endless = 0
         except Exception:
-            _hs = 0
+            _hs_main = 0
+            _hs_endless = 0
         try:
             hs_font = get_font(18)
-            hs_surf = hs_font.render(f"Best: {_hs}", True, (212, 175, 55))
-            # do not touch the white border: inset horizontally AND vertically
-            # leave a small gap from the border on both axes
+            # position inside border (reuse border_rect from existing code above)
             inset_x = 12
             inset_y = 12
             x_pos = border_rect.left + inset_x
             y_pos = border_rect.top + inset_y
-            SCREEN.blit(hs_surf, (x_pos, y_pos))
+            main_surf = hs_font.render(f"Best Campaign: {_hs_main}", True, (212, 175, 55))
+            SCREEN.blit(main_surf, (x_pos, y_pos))
+            endless_surf = hs_font.render(f"Best Endless: {_hs_endless}", True, (182, 205, 255))
+            SCREEN.blit(endless_surf, (x_pos, y_pos + main_surf.get_height() + 4))
         except Exception:
             pass
 

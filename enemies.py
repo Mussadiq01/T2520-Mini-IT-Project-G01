@@ -1191,7 +1191,19 @@ class Enemy:
             except Exception:
                 draw_img = img
         surface.blit(draw_img, (int(self.x) + offset_x, int(self.y) + offset_y))
-
+        # --- NEW: boss red outline ---
+        if getattr(self, "is_boss", False):
+            try:
+                mask = pygame.mask.from_surface(draw_img)
+                outline = mask.outline()
+                if outline:
+                    ox = int(self.x) + offset_x
+                    oy = int(self.y) + offset_y
+                    pts = [(ox + p[0], oy + p[1]) for p in outline]
+                    pygame.draw.lines(surface, (220, 30, 30), True, pts, 3)
+            except Exception:
+                pygame.draw.rect(surface, (220, 30, 30),
+                                 (int(self.x)+offset_x, int(self.y)+offset_y, self.size, self.size), 3)
         # draw projectiles (if any) — use image when available, otherwise fallback to circle
         if self.can_cast and self.projectiles:
             proj_img = getattr(self, "projectile_img", None)

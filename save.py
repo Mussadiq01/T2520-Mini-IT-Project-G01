@@ -41,8 +41,8 @@ def load_player_data() -> dict:
             data = {}
 
         # Ensure default coins
-        data.setdefault("coins", 5000)
+        data.setdefault("coins", 0)
         return data
     except Exception:
         # Safe default if file is missing or corrupt
-        return {"coins": 5000}
+        return {"coins": 0}
