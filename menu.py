@@ -42,9 +42,20 @@ is_fullscreen = True
 # PLAYER_COINS now initialized from save.json (fallback to 0)
 try:
     _data = save.load_player_data() or {}
-    PLAYER_COINS = int(_data.get("coins", 5000))  # UPDATED: default to 5000
+    PLAYER_COINS = int(_data.get("coins", 0))
+    if "master_volume" in _data:
+        try:
+            sounds.set_master_volume(float(_data.get("master_volume", 1.0)))
+        except Exception:
+            pass
 except Exception:
-    PLAYER_COINS = 5000  # UPDATED: default to 5000
+    PLAYER_COINS = 0  # UPDATED: default to 0
+
+# After setting sounds.MASTER_VOLUME ensure mixer reflects it
+try:
+    _apply_master_volume()
+except Exception:
+    pass
 
 # Font helper
 def get_font(size):
@@ -126,7 +137,8 @@ def show_options(snapshot, screen_surface):
     apply_font = get_font(15)
 
     # original master volume snapshot (keeps old behavior if sounds missing)
-    orig_vol = getattr(sounds, 'MASTER_VOLUME', pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0)
+    orig_vol = getattr(sounds, 'MASTER_VOLUME',
+                       pygame.mixer.music.get_volume() if pygame.mixer.get_init() else 1.0)
     vol = orig_vol
 
     # Precompute panel & apply/back rects so event handling can reference them
@@ -157,7 +169,7 @@ def show_options(snapshot, screen_surface):
                 # discard changes, restore original
                 try:
                     pygame.mixer.music.set_volume(orig_vol)
-                    sounds.MASTER_VOLUME = orig_vol
+                    sounds.set_master_volume(orig_vol)     # UPDATED
                 except Exception:
                     pass
                 _apply_master_volume()
@@ -175,10 +187,10 @@ def show_options(snapshot, screen_surface):
                 dragging = False
                 mx, my = ev.pos
                 if apply_r.collidepoint((mx, my)):
-                    # commit changes
                     try:
-                        sounds.MASTER_VOLUME = vol
+                        sounds.set_master_volume(vol)          # UPDATED
                         pygame.mixer.music.set_volume(vol)
+                        save.save_player_data({"master_volume": float(vol)})
                     except Exception:
                         pass
                     _apply_master_volume()
@@ -188,10 +200,9 @@ def show_options(snapshot, screen_surface):
                         pass
                     return ("resume", None)
                 if back_r.collidepoint((mx, my)):
-                    # revert changes
                     try:
+                        sounds.set_master_volume(orig_vol)     # UPDATED
                         pygame.mixer.music.set_volume(orig_vol)
-                        sounds.MASTER_VOLUME = orig_vol
                     except Exception:
                         pass
                     _apply_master_volume()
@@ -234,10 +245,18 @@ def show_options(snapshot, screen_surface):
         handle_rect = pygame.Rect(handle_x - handle_w//2, slider_rect.top - 6, handle_w, 20)
         pygame.draw.rect(screen_surface, (200,200,200), handle_rect)
 
+        # NEW: hover coloring for Apply / Back buttons (text only turns green)
+        mouse_pos = pygame.mouse.get_pos()
+        apply_hover = apply_r.collidepoint(mouse_pos)
+        back_hover = back_r.collidepoint(mouse_pos)
+        # keep button fill constant
         pygame.draw.rect(screen_surface, (180,180,180), apply_r)
         pygame.draw.rect(screen_surface, (180,180,180), back_r)
-        a_surf = apply_font.render("Apply", True, (0,0,0))
-        b_surf = apply_font.render("Back", True, (0,0,0))
+        # only change text color
+        a_txt_col = (0,200,0) if apply_hover else (0,0,0)
+        b_txt_col = (0,200,0) if back_hover  else (0,0,0)
+        a_surf = apply_font.render("Apply", True, a_txt_col)
+        b_surf = apply_font.render("Back", True, b_txt_col)
         screen_surface.blit(a_surf, a_surf.get_rect(center=apply_r.center))
         screen_surface.blit(b_surf, b_surf.get_rect(center=back_r.center))
 
@@ -364,11 +383,11 @@ def show_shop(snapshot, screen_surface):
     except Exception:
         pass
 
-    # initialize coins from save (fallback 5000)
+    # initialize coins from save (fallback 0)
     try:
-        coins = int((save.load_player_data() or {}).get("coins", 5000))
+        coins = int((save.load_player_data() or {}).get("coins", 0))
     except Exception:
-        coins = 5000
+        coins = 0
 
     # load coin icon once
     coin_img = None
@@ -376,7 +395,7 @@ def show_shop(snapshot, screen_surface):
         p = Path(__file__).parent.joinpath("sprites", "coin.png")
         if p.exists():
             im = pygame.image.load(str(p)).convert_alpha()
-            coin_img = pygame.transform.smoothscale(im, (28, 28))
+            coin_img = pygame.transform.smoothscale(im, (48, 48))
     except Exception:
         coin_img = None
 
@@ -398,7 +417,7 @@ def show_shop(snapshot, screen_surface):
         # NEW: Life Armor description
         "Life Armor": "Grants +1 max heart.",
         # NEW: Regen Armor description
-        "Regen Armor": "Regenerates 1 heart every 20s.",
+        "Regen Armor": "Regenerates 1 heart every 15s.",
         # NEW: Thorns Armor description
         "Thorns Armor": "Damages attackers on hit."
     }
@@ -426,16 +445,27 @@ def show_shop(snapshot, screen_surface):
 
     # items (placeholders)
     weapons = ["Sword", "Mallet", "Dagger", "Katana", "The Descender"]
-    # UPDATED: rename fifth armor to Thorns Armor
+    # ADD: central weapon cost map (was previously only inside show_item_page)
+    weapon_costs = {
+        "Sword": 0,
+        "Mallet": 200,
+        "Dagger": 200,
+        "Katana": 400,
+        "The Descender": 1000
+    }
+
+    # UPDATED: armor list (will be re‑sorted by cost below)
     armors = ["Swiftness Armor", "Tank Armor", "Life Armor", "Regen Armor", "Thorns Armor"]
-    # UPDATED: armor costs
-    armor_costs = {"Swiftness Armor": 150, "Tank Armor": 200, "Life Armor": 300, "Regen Armor": 400, "Thorns Armor": 275}
+    armor_costs = {"Swiftness Armor":200, "Tank Armor": 175, "Life Armor": 300, "Regen Armor": 350, "Thorns Armor": 275}
+
+    # NEW: sort both lists from cheapest to most expensive (stable for equal prices)
+    weapons = sorted(weapons, key=lambda w: weapon_costs.get(w, 10**9))
+    armors = sorted(armors, key=lambda a: armor_costs.get(a, 10**9))
 
     # purchased / inventory state persists while shop is open (can be saved later)
     # First weapon (Sword) is already unlocked
     weapons_purchased = set(["Sword"])
     armors_purchased = set()
-    # UPDATED: levels -> 0 for unowned, Sword starts at 1
     weapons_upgrades = {name: (1 if name == "Sword" else 0) for name in weapons}
 
     # NEW: load previously owned + equipped weapon from save.json
@@ -566,13 +596,7 @@ def show_shop(snapshot, screen_surface):
         purchased = (item_name in weapons_purchased) or (item_name in armors_purchased)
         clock_modal = pygame.time.Clock()
         # UPDATED: all weapons cost 100 coins; armor pricing unchanged
-        weapon_price_map = {
-            "Sword": 0,             # already unlocked by default
-            "Mallet": 200,
-            "Dagger": 200,
-            "Katana": 400,
-            "The Descender": 1000
-        }
+        weapon_price_map = weapon_costs
         # UPDATED: use armor_costs for armors, weapon map for weapons
         if item_name in weapons:
             price = weapon_price_map.get(item_name, 100)
@@ -1801,6 +1825,11 @@ def show_play_mode(snapshot, screen_surface):
         _draw_button_label("Campaign Mode", m_col, main_rect)
         _draw_button_label("Endless Mode", e_col, endless_rect)
 
+        # hint line at bottom
+        hint_f = get_font(14)
+        hint_s = hint_f.render("Press Esc to cancel", True, (160,160,160))
+        screen_surface.blit(hint_s, hint_s.get_rect(center=(sw//2, panel.bottom - 22)))
+
         pygame.display.update()
         clock_local.tick(60)
 
@@ -1845,6 +1874,11 @@ def run_menu():
     btn_w = btn_h = btn_x = btn_y_start = btn_gap = 0
     create_assets()
     start_menu_music()  # start looping menu music
+    # ensure loaded master volume is applied to current music channel
+    try:
+        _apply_master_volume()
+    except Exception:
+        pass
 
     def run_options(snapshot):
         return show_options(snapshot, SCREEN)
@@ -1853,9 +1887,7 @@ def run_menu():
     def _do_save():
         nonlocal saved_msg_until
         try:
-            # load existing; merge settings rather than overwrite unrelated fields
             data = save.load_player_data() or {}
-            # Read current runtime master volume from mixer if available so live slider previews are captured.
             try:
                 if pygame.mixer.get_init():
                     current_vol = float(pygame.mixer.music.get_volume())
@@ -1863,24 +1895,22 @@ def run_menu():
                     current_vol = float(getattr(sounds, 'MASTER_VOLUME', 1.0))
             except Exception:
                 current_vol = float(getattr(sounds, 'MASTER_VOLUME', 1.0))
-
-            # persist current master volume and other UI settings
             data["master_volume"] = current_vol
             data["resolution"] = list(SCREEN.get_size())
             data["fullscreen"] = bool(is_fullscreen)
             data.setdefault("weapons_owned", ["Sword"])
+            # STAGE first (optional – harmless)
             save.save_player_data(data)
-
-            # update in-memory runtime value and apply to mixer/channels immediately
+            # NEW: explicit commit writes everything (staged + this data) to disk
+            save.commit_player_data()
             try:
-                sounds.MASTER_VOLUME = current_vol
+                sounds.set_master_volume(current_vol)   # UPDATED
             except Exception:
                 pass
             try:
                 _apply_master_volume()
             except Exception:
                 pass
-
             try:
                 sounds.play_sfx('SelectSound')
             except Exception:
@@ -1889,35 +1919,60 @@ def run_menu():
         except Exception:
             saved_msg_until = pygame.time.get_ticks() + 1200
 
+    def _confirm_quit():
+        # only show if unsaved staged changes exist
+        try:
+            if not save.has_uncommitted_changes():
+                return "quit"
+        except Exception:
+            return "quit"
+        try:
+            snap = SCREEN.copy()
+        except Exception:
+            snap = None
+        res = show_quit_confirmation(snap, SCREEN)
+        if res == "save_quit":
+            try:
+                save.commit_player_data()
+            except Exception:
+                pass
+            return "quit"
+        if res == "quit":
+            try:
+                save.discard_staged_changes()
+            except Exception:
+                pass
+            return "quit"
+        return "cancel"
+
     while True:
         mouse_pos = pygame.mouse.get_pos()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                stop_menu_music()
-                pygame.quit()
-                sys.exit()
-
-            # toggle fullscreen/windowed with F11 (ensure we recreate assets after change)
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
-                is_fullscreen = not is_fullscreen
-                try:
-                    info = pygame.display.Info()
-                    if is_fullscreen:
-                        SCREEN = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+                # intercept window close
+                if _confirm_quit() == "quit":
+                    stop_menu_music()
+                    pygame.quit()
+                    sys.exit()
+                continue
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return ("resume", None)
+                if event.key == pygame.K_TAB:
+                    # toggle focused row
+                    focused_row = "armors" if focused_row == "weapons" else "weapons"
+                if event.key == pygame.K_RIGHT:
+                    # move selection in focused row
+                    if focused_row == "weapons":
+                        weapons_selected = min(len(weapons)-1, weapons_selected+1)
                     else:
-                        SCREEN = pygame.display.set_mode((1280, 720))
-                except Exception:
-                    # fallback: try toggle_fullscreen then recreate assets
-                    try:
-                        pygame.display.toggle_fullscreen()
-                    except Exception:
-                        pass
-                # after mode change recreate background and buttons
-                SCREEN_W, SCREEN_H = SCREEN.get_size()
-                create_assets()
-
+                        armors_selected = min(len(armors)-1, armors_selected+1)
+                if event.key == pygame.K_LEFT:
+                    if focused_row == "weapons":
+                        weapons_selected = max(0, weapons_selected-1)
+                    else:
+                        armors_selected = max(0, armors_selected-1)
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # use the click position from the event (avoid stale mouse_pos issues)
                 mx, my = event.pos
                 if buttons[0].is_clicked((mx, my)):
                     try:
@@ -1978,13 +2033,13 @@ def run_menu():
                     # NEW: SAVE
                     _do_save()
                 elif buttons[4].is_clicked((mx, my)):
-                    try:
-                        sounds.play_sfx('SelectSound')
-                    except Exception:
-                        pass
-                    stop_menu_music()
-                    pygame.quit()
-                    sys.exit()
+                    # QUIT button with unsaved check
+                    if _confirm_quit() == "quit":
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
+                        stop_menu_music()
+                        pygame.quit()
+                        sys.exit()
         # draw background and grey square border
         SCREEN.blit(background, (0, 0))
         border_margin = 20
@@ -2061,3 +2116,98 @@ def run_menu():
 
         pygame.display.update()
         clock.tick(60)   # limit to 60 FPS
+
+def show_quit_confirmation(snapshot, screen_surface):
+    """Return 'save_quit', 'quit', or 'cancel'."""
+    sw, sh = screen_surface.get_size()
+    if snapshot:
+        try:
+            small = pygame.transform.smoothscale(snapshot, (max(1, sw//14), max(1, sh//14)))
+            bg = pygame.transform.smoothscale(small, (sw, sh))
+        except Exception:
+            bg = load_background("Background", (sw, sh))
+    else:
+        bg = load_background("Background", (sw, sh))
+    title_f = get_font(48)
+    msg_f = get_font(24)
+    btn_f = get_font(22)
+    try:
+        sounds.preload('SelectSound')
+    except Exception:
+        pass
+
+    base_panel_w, panel_h = 640, 300
+    padding_side = 40  # side padding inside panel for buttons/text
+
+    labels = [
+        ("save_quit", "Save & Quit"),
+        ("quit",      "Quit without Saving"),
+        ("cancel",    "Cancel")
+    ]
+    padding_x = 32          # extra horizontal padding inside each button
+    btn_h = 56
+    gap = 28
+
+    btn_entries = []
+    total_w = 0
+    for key, text in labels:
+        surf = btn_f.render(text, True, (0,0,0))
+        w = max(150, surf.get_width() + padding_x)
+        btn_entries.append([key, text, surf, w])
+        total_w += w
+    total_w += gap * (len(btn_entries)-1)
+
+    # EXPAND PANEL IF NEEDED
+    panel_w = max(base_panel_w, total_w + padding_side * 2)
+    panel = pygame.Rect((sw - panel_w)//2, (sh - panel_h)//2, panel_w, panel_h)
+
+    # recompute start_x with new panel_w
+    start_x = panel.left + (panel_w - total_w) // 2
+    y = panel.bottom - 90
+
+    rect_map = {}
+    x_cursor = start_x
+    for key, text, surf, w in btn_entries:
+        r = pygame.Rect(x_cursor, y, w, btn_h)
+        rect_map[key] = (r, text)
+        x_cursor += w + gap
+
+    clock_l = pygame.time.Clock()
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return "cancel"
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                return "cancel"
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                mx, my = ev.pos
+                for key, (r, text) in rect_map.items():
+                    if r.collidepoint((mx,my)):
+                        try: sounds.play_sfx('SelectSound')
+                        except Exception: pass
+                        return key
+
+        screen_surface.blit(bg, (0,0))
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0,0,0,170))
+        screen_surface.blit(overlay, (0,0))
+        pygame.draw.rect(screen_surface, (32,32,32), panel)
+        pygame.draw.rect(screen_surface, (140,140,140), panel, 3)
+
+        t = title_f.render("Unsaved Progress", True, (220,220,220))
+        screen_surface.blit(t, t.get_rect(center=(panel.centerx, panel.top+58)))
+
+        lines = ["You have unsaved progress.", "Save before quitting?"]
+        for i, txt in enumerate(lines):
+            ms = msg_f.render(txt, True, (210,210,210))
+            screen_surface.blit(ms, ms.get_rect(center=(panel.centerx, panel.top+128 + i*32)))
+
+        mouse = pygame.mouse.get_pos()
+        for key, (r, text) in rect_map.items():
+            pygame.draw.rect(screen_surface, (200,200,200), r)
+            col = (0,200,0) if r.collidepoint(mouse) else (0,0,0)
+            txt_surf = btn_f.render(text, True, col)
+            screen_surface.blit(txt_surf, txt_surf.get_rect(center=r.center))
+
+        pygame.display.update()
+        clock_l.tick(60)

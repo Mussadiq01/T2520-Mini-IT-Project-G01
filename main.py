@@ -282,6 +282,8 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
     attack_hits = set()
     # NEW: bonus damage that applies to player projectiles (e.g., sunball)
     projectile_damage_bonus = 0
+    # NEW: total accumulated +Damage powerup bonus (used for Thorns scaling)
+    damage_powerup_total = 0
     # NEW: upgrade-derived damage bonuses (melee + projectile)
     upgrade_damage_bonus = 0
     projectile_upgrade_damage = 0
@@ -1062,10 +1064,22 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
     # NEW: keep difficulty name for conditional scoring
     difficulty_name = str(difficulty).lower()
     # NEW: Regen Armor timers
-    regen_interval_ms = 20000
+    regen_interval_ms = 15000
     regen_timer_ms = 0
     # NEW: Thorns Armor damage (per hit to attacker)
-    thorns_damage = 5
+    # (Was a flat 5; now it scales with +Damage powerups.)
+    # Base retaliation (before powerups):
+    base_thorns_damage = 5
+    thorns_damage = base_thorns_damage
+
+    # Helper to compute weapon's non‑powerup baseline (base weapon + upgrades + swiftness armor bonus)
+    def _compute_weapon_base_damage():
+        return (current_weapon.damage +
+                upgrade_damage_bonus +
+                (5 if equipped_swiftness else 0))
+
+    # Track baseline so we can detect additive powerup bonus each frame
+    baseline_weapon_damage_no_powerups = _compute_weapon_base_damage()
 
     heart_full = load_sprite("heart_1.png", size=48)
     heart_empty = load_sprite("heart_0.png", size=48)
@@ -1073,6 +1087,11 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
     on_trap_prev = False
 
     run = True
+    # NEW: cheat sequence tracking to unlock Q insta-kill
+    cheat_sequence = "descend"
+    cheat_progress = 0
+    cheat_unlocked = False
+
     # Floating damage indicators (use bundled font if available)
     dmg_indicators = []  # each: {'x','y','text','color','life','vy'}
     # NEW: score counter
@@ -1101,12 +1120,12 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
             eq_arm = (_latest.get("equipped_armor") or "").strip()
             swiftness_outline = (eq_arm == "Swiftness Armor")
             tank_outline = (eq_arm == "Tank Armor")
-            # NEW: Life Armor outline refresh
             life_outline = (eq_arm == "Life Armor")
-            # NEW: Regen Armor outline refresh
             regen_outline = (eq_arm == "Regen Armor")
-            # NEW: Thorns Armor outline refresh
             thorns_outline = (eq_arm == "Thorns Armor")
+            # NEW: ensure thorns reflects accumulated damage powerups if armor equipped mid‑run
+            if thorns_outline:
+                thorns_damage = base_thorns_damage + damage_powerup_total
         except Exception:
             pass
 
@@ -1169,6 +1188,17 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                     if d in pressed_dirs:
                         pressed_dirs.remove(d)
                     pressed_dirs.append(d)
+                # NEW: track cheat sequence 'descend' to unlock Q
+                ch = getattr(event, 'unicode', '')
+                if not cheat_unlocked and ch:
+                    ch = ch.lower()
+                    if ch == cheat_sequence[cheat_progress:cheat_progress+1]:
+                        cheat_progress += 1
+                        if cheat_progress == len(cheat_sequence):
+                            cheat_unlocked = True
+                            print("Cheat unlocked: Q will now clear all enemies.")
+                    else:
+                        cheat_progress = 1 if ch == cheat_sequence[0] else 0
             if event.type == pygame.KEYUP:
                 if event.key in key_to_dir:
                     d = key_to_dir[event.key]
@@ -1235,13 +1265,13 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                     _on_game_over()
                     return
 
-            # NEW: developer hotkey — insta-clear all enemies in the current level
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+            # REPLACED: developer hotkey — insta-clear all enemies (now requires cheat unlocked)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_q and cheat_unlocked:
                 for e in enemies:
                     if getattr(e, "alive", False):
                         e.alive = False
                         try:
-                            e._died_this_frame = True  # grant points/particles this frame
+                            e._died_this_frame = True
                         except Exception:
                             pass
                         # clear active projectiles from casters
@@ -1677,6 +1707,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                     try:
                         if getattr(e, "is_boss", False):
                             base = 1000
+
                             score += int(base * xp_multiplier)
                     except Exception:
                         pass
@@ -1731,6 +1762,10 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                                 amt = int(pick.get("amount", 0))
                                 sword_damage += amt
                                 projectile_damage_bonus += amt
+                                # NEW: track and apply to thorns
+                                damage_powerup_total += amt
+                                if thorns_outline:
+                                    thorns_damage = base_thorns_damage + damage_powerup_total
                             elif ptype == "attackspeed":
                                 try:
                                     amt = float(pick.get("amount", 0.2))
@@ -2008,6 +2043,8 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                       # Thorns retaliation: damage the attacker (knock them away from player)
                       if thorns_outline:
                           try:
+                              # ensure up-to-date scaling (redundant safeguard)
+                              thorns_damage = base_thorns_damage + damage_powerup_total
                               e.apply_damage(thorns_damage, kb_x=-nx, kb_y=-ny, kb_force=26, kb_duration=140)
                           except Exception:
                               try:
@@ -2336,7 +2373,7 @@ def run_game(screen=None, difficulty: str = "normal", mode: str = "main"):
                 for p in list(e.projectiles):
                     pxp = p['x']
                     pyp = p['y']
-                    # dagger (arc == 0): use thrust segment intersection instead of arc-angle gating
+                    # dagger (arc==0): use thrust segment intersection instead of arc-angle gating
                     if swing_arc == 0:
                         # thrust direction and current thrust length (match rendering logic above)
                         dx_dir = math.cos(math.radians(swing_start_angle))
